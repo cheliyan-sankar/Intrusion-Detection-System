@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DemoKart Admin Panel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      :root {
+        --admin-primary: #1a365d;
+        --admin-secondary: #2d3748;
+        --admin-accent: #3182ce;
+        --admin-success: #38a169;
+        --admin-warning: #d69e2e;
+        --admin-danger: #e53e3e;
+        --admin-bg: #f7fafc;
+        --admin-card: #ffffff;
+        --admin-border: #e2e8f0;
+        --admin-text: #2d3748;
+        --admin-text-light: #718096;
+      }
+
+      body {
+        font-family: 'Inter', sans-serif;
+        background: var(--admin-bg);
+        color: var(--admin-text);
+      }
+
+      .admin-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+
+      .admin-header {
+        background: var(--admin-card);
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 24px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border: 1px solid var(--admin-border);
+      }
+
+      .admin-header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .admin-title h1 {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--admin-primary);
+        margin: 0;
+      }
+
+      .admin-subtitle {
+        color: var(--admin-text-light);
+        margin: 4px 0 0 0;
+        font-size: 14px;
+      }
+
+      .admin-actions {
+        display: flex;
+        gap: 12px;
+      }
+
+      .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 8px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .btn-primary {
+        background: var(--admin-accent);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: #2c5282;
+      }
+
+      .btn-secondary {
+        background: var(--admin-secondary);
+        color: white;
+      }
+
+      .btn-secondary:hover {
+        background: #4a5568;
+      }
+
+      .btn-outline {
+        background: transparent;
+        color: var(--admin-text);
+        border: 1px solid var(--admin-border);
+      }
+
+      .btn-outline:hover {
+        background: var(--admin-card);
+      }
+
+      .admin-grid {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 24px;
+      }
+
+      .admin-sidebar {
+        background: var(--admin-card);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border: 1px solid var(--admin-border);
+        height: fit-content;
+      }
+
+      .admin-main {
+        background: var(--admin-card);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border: 1px solid var(--admin-border);
+      }
+
+      .section-title {
+        font-size: 20px;
+        font-weight: 600;
+        color: var(--admin-primary);
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .form-group {
+        margin-bottom: 20px;
+      }
+
+      .form-label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 6px;
+        color: var(--admin-text);
+      }
+
+      .form-input {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid var(--admin-border);
+        border-radius: 8px;
+        font-size: 14px;
+        transition: border-color 0.2s;
+      }
+
+      .form-input:focus {
+        outline: none;
+        border-color: var(--admin-accent);
+        box-shadow: 0 0 0 3px rgba(49, 130, 206, 0.1);
+      }
+
+      .form-textarea {
+        resize: vertical;
+        min-height: 80px;
+      }
+
+      .products-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+      }
+
+      .products-table th,
+      .products-table td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--admin-border);
+      }
+
+      .products-table th {
+        background: var(--admin-bg);
+        font-weight: 600;
+        color: var(--admin-primary);
+      }
+
+      .product-image {
+        width: 60px;
+        height: 60px;
+        object-fit: cover;
+        border-radius: 6px;
+      }
+
+      .product-name {
+        font-weight: 500;
+        color: var(--admin-text);
+      }
+
+      .product-price {
+        font-weight: 600;
+        color: var(--admin-accent);
+      }
+
+      .product-category {
+        background: #edf2f7;
+        color: var(--admin-text-light);
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .action-buttons {
+        display: flex;
+        gap: 8px;
+      }
+
+      .btn-icon {
+        padding: 8px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .btn-edit {
+        background: var(--admin-warning);
+        color: white;
+      }
+
+      .btn-edit:hover {
+        background: #b7791f;
+      }
+
+      .btn-delete {
+        background: var(--admin-danger);
+        color: white;
+      }
+
+      .btn-delete:hover {
+        background: #c53030;
+      }
+
+      .edit-form {
+        background: #fefcbf;
+        border: 1px solid #f6e05e;
+        border-radius: 8px;
+        padding: 16px;
+        margin-top: 12px;
+      }
+
+      .edit-form .form-group {
+        margin-bottom: 12px;
+      }
+
+      .edit-form .form-input {
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      .stat-card {
+        background: var(--admin-card);
+        border: 1px solid var(--admin-border);
+        border-radius: 8px;
+        padding: 16px;
+        text-align: center;
+      }
+
+      .stat-number {
+        font-size: 24px;
+        font-weight: 700;
+        color: var(--admin-accent);
+        margin-bottom: 4px;
+      }
+
+      .stat-label {
+        color: var(--admin-text-light);
+        font-size: 14px;
+      }
+
+      .empty-state {
+        text-align: center;
+        color: var(--admin-text-light);
+        padding: 40px 20px;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @media (max-width: 1024px) {
+        .admin-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 768px) {
+        .admin-container {
+          padding: 16px;
+        }
+
+        .admin-header-content {
+          flex-direction: column;
+          gap: 16px;
+          text-align: center;
+        }
+
+        .products-table {
+          font-size: 14px;
+        }
+
+        .products-table th,
+        .products-table td {
+          padding: 8px;
+        }
+
+        .action-buttons {
+          flex-direction: column;
+        }
+      }
+
+      /* Tab Styles */
+      .admin-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--admin-border);
+        margin-bottom: 24px;
+      }
+
+      .tab-btn {
+        padding: 12px 24px;
+        border: none;
+        background: transparent;
+        color: var(--admin-text-light);
+        font-weight: 500;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s;
+      }
+
+      .tab-btn:hover {
+        color: var(--admin-accent);
+      }
+
+      .tab-btn.active {
+        color: var(--admin-accent);
+        border-bottom-color: var(--admin-accent);
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      /* Dashboard Styles */
+      .dashboard-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+        gap: 24px;
+        margin-bottom: 24px;
+      }
+
+      .dashboard-card {
+        background: var(--admin-card);
+        border: 1px solid var(--admin-border);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+      }
+
+      .card-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--admin-primary);
+        margin-bottom: 16px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .traffic-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 16px;
+      }
+
+      .stat-item {
+        text-align: center;
+        padding: 16px;
+        background: var(--admin-bg);
+        border-radius: 8px;
+        border: 1px solid var(--admin-border);
+      }
+
+      .stat-number {
+        font-size: 24px;
+        font-weight: 700;
+        color: var(--admin-accent);
+        margin-bottom: 4px;
+      }
+
+      .stat-label {
+        color: var(--admin-text-light);
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      /* Chart Styles */
+      .chart-container {
+        position: relative;
+        height: 200px;
+        margin-top: 16px;
+      }
+
+      /* Logs Styles */
+      .logs-container {
+        max-height: 300px;
+        overflow-y: auto;
+      }
+
+      .logs-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .log-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        background: var(--admin-bg);
+        border-radius: 6px;
+        border-left: 4px solid var(--admin-accent);
+      }
+
+      .log-item.error {
+        border-left-color: var(--admin-danger);
+      }
+
+      .log-item.success {
+        border-left-color: var(--admin-success);
+      }
+
+      .log-item.warning {
+        border-left-color: var(--admin-warning);
+      }
+
+      .log-time {
+        font-size: 12px;
+        color: var(--admin-text-light);
+        min-width: 80px;
+      }
+
+      .log-icon {
+        font-size: 16px;
+      }
+
+      .log-message {
+        flex: 1;
+        font-size: 14px;
+      }
+
+      /* Top Products Styles */
+      .top-products {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .top-product-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        background: var(--admin-bg);
+        border-radius: 8px;
+        border: 1px solid var(--admin-border);
+      }
+
+      .top-product-rank {
+        width: 24px;
+        height: 24px;
+        background: var(--admin-accent);
+        color: white;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .top-product-image {
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        border-radius: 6px;
+      }
+
+      .top-product-info {
+        flex: 1;
+      }
+
+      .top-product-name {
+        font-weight: 500;
+        color: var(--admin-text);
+        font-size: 14px;
+        margin-bottom: 2px;
+      }
+
+      .top-product-stats {
+        font-size: 12px;
+        color: var(--admin-text-light);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="admin-container">
+      <!-- Admin Header -->
+      <header class="admin-header">
+        <div class="admin-header-content">
+          <div class="admin-title">
+            <h1>🛍️ DemoKart Admin Panel</h1>
+            <p class="admin-subtitle">Manage your e-commerce products and inventory</p>
+          </div>
+          <div class="admin-actions">
+            <a href="/index.html" class="btn btn-outline">← Back to Store</a>
+            <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Login Panel (shown when not logged in) -->
+      <div id="loginPanel" class="admin-main">
+        <h2 class="section-title">🔐 Admin Login</h2>
+        <p style="color: var(--admin-text-light); margin-bottom: 24px;">Enter your admin credentials to access the management panel.</p>
+        <form id="loginForm" style="max-width: 400px;">
+          <div class="form-group">
+            <label class="form-label">Username</label>
+            <input type="text" name="username" class="form-input" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password</label>
+            <input type="password" name="password" class="form-input" required />
+          </div>
+          <button type="submit" class="btn btn-primary" style="width: 100%;">Sign In</button>
+        </form>
+        <p id="loginError" class="hidden" style="color: var(--admin-danger); margin-top: 16px; text-align: center;">Invalid credentials</p>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div class="admin-tabs">
+        <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+        <button class="tab-btn" data-tab="products">📦 Products</button>
+      </div>
+
+      <!-- Dashboard Tab -->
+      <div id="dashboardTab" class="tab-content active">
+        <div class="dashboard-grid">
+          <!-- Traffic Overview -->
+          <div class="dashboard-card">
+            <h3 class="card-title">🚦 Traffic Overview</h3>
+            <div class="traffic-stats">
+              <div class="stat-item">
+                <div class="stat-number" id="todayVisitors">0</div>
+                <div class="stat-label">Today's Visitors</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-number" id="todayPageViews">0</div>
+                <div class="stat-label">Page Views</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-number" id="activeUsers">0</div>
+                <div class="stat-label">Active Users</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-number" id="conversionRate">0%</div>
+                <div class="stat-label">Conversion Rate</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Traffic Graph -->
+          <div class="dashboard-card">
+            <h3 class="card-title">📈 Daily Traffic (Last 7 Days)</h3>
+            <div class="chart-container">
+              <canvas id="trafficChart" width="400" height="200"></canvas>
+            </div>
+          </div>
+
+          <!-- Recent Activity Logs -->
+          <div class="dashboard-card">
+            <h3 class="card-title">📝 Recent Activity Logs</h3>
+            <div class="logs-container">
+              <div id="activityLogs" class="logs-list">
+                <!-- Logs will be loaded here -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Top Products -->
+          <div class="dashboard-card">
+            <h3 class="card-title">🔥 Top Performing Products</h3>
+            <div class="top-products">
+              <div id="topProductsList">
+                <!-- Top products will be loaded here -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Products Tab -->
+      <div id="productsTab" class="tab-content">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-number" id="totalProducts">0</div>
+            <div class="stat-label">Total Products</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="totalCategories">0</div>
+            <div class="stat-label">Categories</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="avgPrice">₹0</div>
+            <div class="stat-label">Average Price</div>
+          </div>
+        </div>
+
+        <div class="admin-grid">
+          <!-- Add Product Sidebar -->
+          <div class="admin-sidebar">
+            <h3 class="section-title">➕ Add New Product</h3>
+            <form id="productForm">
+              <div class="form-group">
+                <label class="form-label">Product Name *</label>
+                <input type="text" name="name" class="form-input" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Price (₹) *</label>
+                <input type="number" name="price" class="form-input" min="0" step="0.01" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Category</label>
+                <select name="category" class="form-input">
+                  <option value="">Select Category</option>
+                  <option value="Electronics">Electronics</option>
+                  <option value="Fashion">Fashion</option>
+                  <option value="Home & Kitchen">Home & Kitchen</option>
+                  <option value="Books">Books</option>
+                  <option value="Sports & Fitness">Sports & Fitness</option>
+                  <option value="Beauty & Personal Care">Beauty & Personal Care</option>
+                  <option value="Mobile Accessories">Mobile Accessories</option>
+                  <option value="Computers">Computers</option>
+                  <option value="Wearable Technology">Wearable Technology</option>
+                  <option value="Toys & Games">Toys & Games</option>
+                  <option value="Musical Instruments">Musical Instruments</option>
+                  <option value="Bags & Luggage">Bags & Luggage</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Brand</label>
+                <input type="text" name="brand" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Image URL</label>
+                <input type="url" name="imageUrl" class="form-input" placeholder="https://..." />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-input form-textarea"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Rating (0-5)</label>
+                <input type="number" name="rating" class="form-input" min="0" max="5" step="0.1" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Review Count</label>
+                <input type="number" name="reviewCount" class="form-input" min="0" />
+              </div>
+              <button type="submit" class="btn btn-primary" style="width: 100%;">Add Product</button>
+            </form>
+          </div>
+
+          <!-- Products Management -->
+          <div class="admin-main">
+            <h3 class="section-title">📦 Product Management</h3>
+
+            <div id="adminEmpty" class="empty-state">
+              <p>No products found. Add your first product using the form on the left.</p>
+            </div>
+
+            <div id="productsContainer">
+              <table class="products-table">
+                <thead>
+                  <tr>
+                    <th>Image</th>
+                    <th>Product Details</th>
+                    <th>Category</th>
+                    <th>Price</th>
+                    <th>Rating</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="adminProducts">
+                  <!-- Products will be loaded here -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>
