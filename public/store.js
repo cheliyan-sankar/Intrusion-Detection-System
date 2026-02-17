@@ -118,17 +118,46 @@ const renderProducts = (products) => {
   });
 };
 
+const applyClientFilters = (products) => {
+  let out = products.slice();
+  const f = currentFilters || {};
+  if (f.search) {
+    const s = f.search.toLowerCase();
+    out = out.filter(p => (p.name||'').toLowerCase().includes(s) || (p.brand||'').toLowerCase().includes(s) || (p.description||'').toLowerCase().includes(s));
+  }
+  if (f.category) {
+    out = out.filter(p => (p.category || '') === f.category);
+  }
+  const min = f.minPrice ? Number(f.minPrice) : null;
+  const max = f.maxPrice ? Number(f.maxPrice) : null;
+  if (!Number.isNaN(min) && min !== null) out = out.filter(p => Number(p.price) >= min);
+  if (!Number.isNaN(max) && max !== null) out = out.filter(p => Number(p.price) <= max);
+  if (f.sort) {
+    if (f.sort === 'price_asc') out.sort((a,b) => a.price - b.price);
+    else if (f.sort === 'price_desc') out.sort((a,b) => b.price - a.price);
+    else if (f.sort === 'rating') out.sort((a,b) => (b.rating||0) - (a.rating||0));
+  }
+  return out;
+};
+
 const loadProducts = () => {
   const params = new URLSearchParams(currentFilters);
   fetch(`/api/products?${params}`)
     .then((res) => res.json())
     .then((data) => {
-      if (data.ok) {
+      if (data && data.ok) {
         renderProducts(data.products || []);
+      } else {
+        // fallback to static file
+        return fetch('/products.json').then(r => r.json()).then(list => renderProducts(applyClientFilters(list || [])));
       }
     })
     .catch(() => {
-      emptyState.classList.remove("hidden");
+      // API failed — try static fallback
+      fetch('/products.json')
+        .then(r => r.json())
+        .then(list => renderProducts(applyClientFilters(list || [])))
+        .catch(() => { emptyState.classList.remove("hidden"); });
     });
 };
 
@@ -136,9 +165,10 @@ const loadCategories = () => {
   fetch("/api/categories")
     .then((res) => res.json())
     .then((data) => {
-      if (data.ok) {
+      if (data && data.ok) {
+        const cats = data.categories || [];
         categoriesList.innerHTML = '<a href="#" data-category="">All</a>';
-        data.categories.forEach(category => {
+        cats.forEach(category => {
           const link = document.createElement("a");
           link.href = "#";
           link.textContent = category;
@@ -150,7 +180,49 @@ const loadCategories = () => {
           };
           categoriesList.appendChild(link);
         });
+      } else {
+        // fallback to static products list
+        fetch('/products.json')
+          .then(r => r.json())
+          .then(list => {
+            const cats = Array.from(new Set((list||[]).map(p => p.category).filter(Boolean))).sort();
+            categoriesList.innerHTML = '<a href="#" data-category="">All</a>';
+            cats.forEach(category => {
+              const link = document.createElement("a");
+              link.href = "#";
+              link.textContent = category;
+              link.dataset.category = category;
+              link.onclick = (e) => {
+                e.preventDefault();
+                currentFilters.category = category;
+                loadProducts();
+              };
+              categoriesList.appendChild(link);
+            });
+          })
+          .catch(() => {});
       }
+    })
+    .catch(() => {
+      fetch('/products.json')
+        .then(r => r.json())
+        .then(list => {
+          const cats = Array.from(new Set((list||[]).map(p => p.category).filter(Boolean))).sort();
+          categoriesList.innerHTML = '<a href="#" data-category="">All</a>';
+          cats.forEach(category => {
+            const link = document.createElement("a");
+            link.href = "#";
+            link.textContent = category;
+            link.dataset.category = category;
+            link.onclick = (e) => {
+              e.preventDefault();
+              currentFilters.category = category;
+              loadProducts();
+            };
+            categoriesList.appendChild(link);
+          });
+        })
+        .catch(() => {});
     });
 };
 
