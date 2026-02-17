@@ -2,6 +2,18 @@
   "name": "demokart",
   "version": "1.0.0",
   "private": true,
+  "description": "DemoKart is a Flipkart-inspired demo store with a public catalog and a secure admin panel for product uploads.",
+  "homepage": "https://github.com/cheliyan-sankar/Intrusion-Detection-System#readme",
+  "bugs": {
+    "url": "https://github.com/cheliyan-sankar/Intrusion-Detection-System/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cheliyan-sankar/Intrusion-Detection-System.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -14,5 +26,6 @@
     "express-session": "^1.18.0",
     "sqlite3": "^5.1.7",
     "pg": "^8.11.0"
-  }
+  },
+  "devDependencies": {}
 }

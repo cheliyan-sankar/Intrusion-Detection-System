@@ -3,6 +3,7 @@ const fs = require("fs");
 const express = require("express");
 const session = require("express-session");
 const sqlite3 = require("sqlite3").verbose();
+const { Pool } = require('pg');
 const bcrypt = require("bcrypt");
 require("dotenv").config();
 
@@ -20,37 +21,94 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const dbPath = path.join(dataDir, "demokart.db");
-const db = new sqlite3.Database(dbPath);
+const DATABASE_URL = process.env.DATABASE_URL;
+const usePostgres = Boolean(DATABASE_URL);
 
-db.serialize(() => {
-  db.run(
-    "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL NOT NULL, description TEXT, image_url TEXT, category TEXT, brand TEXT, rating REAL DEFAULT 0, review_count INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, email TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS cart (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product_id INTEGER, quantity INTEGER DEFAULT 1, FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(product_id) REFERENCES products(id))"
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS wishlist (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product_id INTEGER, FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(product_id) REFERENCES products(id))"
-  );
-  // Analytics tables
-  db.run(
-    "CREATE TABLE IF NOT EXISTS page_views (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, user_id INTEGER, page TEXT, user_agent TEXT, ip_address TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id))"
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS user_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT UNIQUE, user_id INTEGER, start_time TEXT DEFAULT CURRENT_TIMESTAMP, last_activity TEXT DEFAULT CURRENT_TIMESTAMP, is_active INTEGER DEFAULT 1, FOREIGN KEY(user_id) REFERENCES users(id))"
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, session_id TEXT, action TEXT, details TEXT, ip_address TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id))"
-  );
-  // Attack logs table for IDS testing
-  db.run(
-    "CREATE TABLE IF NOT EXISTS attack_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, attack_type TEXT, details TEXT, severity TEXT, ip_address TEXT, session_id TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP)"
-  );
-});
+let db;
+let pool;
+
+if (usePostgres) {
+  pool = new Pool({ connectionString: DATABASE_URL, ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false });
+
+  const convertPlaceholders = (sql) => {
+    let i = 0;
+    return sql.replace(/\?/g, () => '$' + (++i));
+  };
+
+  db = {
+    run(sql, params, cb) {
+      if (typeof params === 'function') {
+        cb = params;
+        params = [];
+      }
+      const q = convertPlaceholders(sql);
+      return pool.query(q, params || [])
+        .then(res => {
+          if (cb) cb.call({ lastID: res.rows[0] ? res.rows[0].id : undefined, changes: res.rowCount }, null);
+        })
+        .catch(err => { if (cb) cb(err); });
+    },
+    get(sql, params, cb) {
+      if (typeof params === 'function') {
+        cb = params;
+        params = [];
+      }
+      const q = convertPlaceholders(sql);
+      return pool.query(q, params || [])
+        .then(res => cb(null, res.rows[0]))
+        .catch(err => cb(err));
+    },
+    all(sql, params, cb) {
+      if (typeof params === 'function') {
+        cb = params;
+        params = [];
+      }
+      const q = convertPlaceholders(sql);
+      return pool.query(q, params || [])
+        .then(res => cb(null, res.rows))
+        .catch(err => cb(err));
+    },
+    serialize(fn) { return fn(); },
+    prepare() { return { run() {}, finalize() {} }; }
+  };
+
+} else {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  const dbPath = path.join(dataDir, "demokart.db");
+  const sqliteDb = new sqlite3.Database(dbPath);
+  db = sqliteDb;
+
+  db.serialize(() => {
+    db.run(
+      "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL NOT NULL, description TEXT, image_url TEXT, category TEXT, brand TEXT, rating REAL DEFAULT 0, review_count INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+    );
+    db.run(
+      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, email TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+    );
+    db.run(
+      "CREATE TABLE IF NOT EXISTS cart (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product_id INTEGER, quantity INTEGER DEFAULT 1, FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(product_id) REFERENCES products(id))"
+    );
+    db.run(
+      "CREATE TABLE IF NOT EXISTS wishlist (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product_id INTEGER, FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(product_id) REFERENCES products(id))"
+    );
+    // Analytics tables
+    db.run(
+      "CREATE TABLE IF NOT EXISTS page_views (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, user_id INTEGER, page TEXT, user_agent TEXT, ip_address TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id))"
+    );
+    db.run(
+      "CREATE TABLE IF NOT EXISTS user_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT UNIQUE, user_id INTEGER, start_time TEXT DEFAULT CURRENT_TIMESTAMP, last_activity TEXT DEFAULT CURRENT_TIMESTAMP, is_active INTEGER DEFAULT 1, FOREIGN KEY(user_id) REFERENCES users(id))"
+    );
+    db.run(
+      "CREATE TABLE IF NOT EXISTS activity_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, session_id TEXT, action TEXT, details TEXT, ip_address TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id))"
+    );
+    // Attack logs table for IDS testing
+    db.run(
+      "CREATE TABLE IF NOT EXISTS attack_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, attack_type TEXT, details TEXT, severity TEXT, ip_address TEXT, session_id TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP)"
+    );
+  });
+}
 
 // Seed sample products if database is empty
 db.get("SELECT COUNT(*) as count FROM products", (err, row) => {
@@ -656,10 +714,17 @@ app.use((req, res, next) => {
   }
 
   // Update or create user session for all requests
-  db.run(
-    "INSERT OR REPLACE INTO user_sessions (session_id, user_id, last_activity, is_active) VALUES (?, ?, datetime('now'), 1)",
-    [sessionId, userId]
-  );
+  if (usePostgres) {
+    db.run(
+      "INSERT INTO user_sessions (session_id, user_id, last_activity, is_active) VALUES (?, ?, NOW(), true) ON CONFLICT (session_id) DO UPDATE SET user_id = EXCLUDED.user_id, last_activity = NOW(), is_active = true",
+      [sessionId, userId]
+    );
+  } else {
+    db.run(
+      "INSERT OR REPLACE INTO user_sessions (session_id, user_id, last_activity, is_active) VALUES (?, ?, datetime('now'), 1)",
+      [sessionId, userId]
+    );
+  }
 
   next();
 });
@@ -726,8 +791,8 @@ app.get("/api/products", (req, res) => {
     query += " ORDER BY price DESC";
   } else if (sort === "rating") {
     query += " ORDER BY rating DESC";
-  } else {
-    query += " ORDER BY datetime(created_at) DESC";
+    } else {
+    query += " ORDER BY created_at DESC";
   }
 
   db.all(query, params, (err, rows) => {
@@ -802,18 +867,33 @@ app.post("/api/cart", (req, res) => {
     return res.status(400).json({ ok: false, message: "Invalid data" });
   }
 
-  db.run(
-    "INSERT OR REPLACE INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)",
-    [req.session.userId, productId, qty],
-    function onInsert(err) {
-      if (err) {
-        return res.status(500).json({ ok: false, message: "Database error" });
-      }
+  if (usePostgres) {
+    db.run(
+      "INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?) RETURNING id",
+      [req.session.userId, productId, qty],
+      function onInsert(err) {
+        if (err) {
+          return res.status(500).json({ ok: false, message: "Database error" });
+        }
 
-      logActivity(req.session.userId, req.session.id, 'cart_add', `Added product ${productId} to cart (quantity: ${qty})`, req.ip);
-      return res.json({ ok: true, cartId: this.lastID });
-    }
-  );
+        logActivity(req.session.userId, req.session.id, 'cart_add', `Added product ${productId} to cart (quantity: ${qty})`, req.ip);
+        return res.json({ ok: true, cartId: this.lastID });
+      }
+    );
+  } else {
+    db.run(
+      "INSERT OR REPLACE INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)",
+      [req.session.userId, productId, qty],
+      function onInsert(err) {
+        if (err) {
+          return res.status(500).json({ ok: false, message: "Database error" });
+        }
+
+        logActivity(req.session.userId, req.session.id, 'cart_add', `Added product ${productId} to cart (quantity: ${qty})`, req.ip);
+        return res.json({ ok: true, cartId: this.lastID });
+      }
+    );
+  }
 });
 
 app.delete("/api/cart/:cartId", (req, res) => {
@@ -863,20 +943,21 @@ app.post("/api/wishlist", (req, res) => {
     return res.status(400).json({ ok: false, message: "Invalid data" });
   }
 
-  db.run(
-    "INSERT OR IGNORE INTO wishlist (user_id, product_id) VALUES (?, ?)",
-    [req.session.userId, productId],
-    function onInsert(err) {
-      if (err) {
-        return res.status(500).json({ ok: false, message: "Database error" });
-      }
+  // Ensure we don't add duplicates: check then insert
+  db.get("SELECT id FROM wishlist WHERE user_id = ? AND product_id = ?", [req.session.userId, productId], (err, existing) => {
+    if (err) return res.status(500).json({ ok: false, message: "Database error" });
+    if (existing && existing.id) {
+      return res.json({ ok: true, wishlistId: existing.id });
+    }
 
+    db.run("INSERT INTO wishlist (user_id, product_id) VALUES (?, ?)", [req.session.userId, productId], function onInsert(err) {
+      if (err) return res.status(500).json({ ok: false, message: "Database error" });
       if (this.changes > 0) {
         logActivity(req.session.userId, req.session.id, 'wishlist_add', `Added product ${productId} to wishlist`, req.ip);
       }
       return res.json({ ok: true, wishlistId: this.lastID });
-    }
-  );
+    });
+  });
 });
 
 app.delete("/api/wishlist/:wishlistId", (req, res) => {
@@ -1080,56 +1161,58 @@ app.get("/api/admin/analytics/traffic", requireAdmin, (req, res) => {
   const today = new Date().toISOString().split('T')[0];
 
   // Today's visitors (unique sessions)
-  db.get(
-    "SELECT COUNT(DISTINCT session_id) as visitors FROM page_views WHERE date(timestamp) = ?",
-    [today],
-    (err, visitorsRow) => {
+  const visitorsSql = usePostgres ? "SELECT COUNT(DISTINCT session_id) as visitors FROM page_views WHERE DATE(timestamp) = $1" : "SELECT COUNT(DISTINCT session_id) as visitors FROM page_views WHERE date(timestamp) = ?";
+  const pageViewsSql = usePostgres ? "SELECT COUNT(*) as pageViews FROM page_views WHERE DATE(timestamp) = $1" : "SELECT COUNT(*) as pageViews FROM page_views WHERE date(timestamp) = ?";
+  const conversionsSql = usePostgres ? "SELECT COUNT(DISTINCT a.user_id) as conversions FROM activity_logs a WHERE a.action = 'cart_add' AND DATE(a.timestamp) = $1" : "SELECT COUNT(DISTINCT a.user_id) as conversions FROM activity_logs a WHERE a.action = 'cart_add' AND date(a.timestamp) = ?";
+
+  db.get(visitorsSql, [today], (err, visitorsRow) => {
+    if (err) return res.status(500).json({ ok: false, message: "Database error" });
+
+    db.get(pageViewsSql, [today], (err, pageViewsRow) => {
       if (err) return res.status(500).json({ ok: false, message: "Database error" });
 
-      // Today's page views
-      db.get(
-        "SELECT COUNT(*) as pageViews FROM page_views WHERE date(timestamp) = ?",
-        [today],
-        (err, pageViewsRow) => {
+      // Active users (sessions active in last 30 minutes)
+      if (usePostgres) {
+        db.get("SELECT COUNT(*) as activeUsers FROM user_sessions WHERE is_active = true AND last_activity > NOW() - INTERVAL '30 minutes'", [], (err, activeUsersRow) => {
           if (err) return res.status(500).json({ ok: false, message: "Database error" });
 
-          // Active users (sessions active in last 30 minutes)
-          db.get(
-            "SELECT COUNT(*) as activeUsers FROM user_sessions WHERE is_active = 1 AND datetime(last_activity) > datetime('now', '-30 minutes')",
-            [],
-            (err, activeUsersRow) => {
-              if (err) return res.status(500).json({ ok: false, message: "Database error" });
+          db.get(conversionsSql, [today], (err, conversionsRow) => {
+            if (err) return res.status(500).json({ ok: false, message: "Database error" });
 
-              // Calculate conversion rate (simplified - cart additions vs page views)
-              db.get(
-                "SELECT COUNT(DISTINCT a.user_id) as conversions FROM activity_logs a WHERE a.action = 'cart_add' AND date(a.timestamp) = ?",
-                [today],
-                (err, conversionsRow) => {
-                  if (err) return res.status(500).json({ ok: false, message: "Database error" });
+            const visitors = visitorsRow.visitors || 0;
+            const pageViews = pageViewsRow.pageViews || 0;
+            const activeUsers = activeUsersRow.activeUsers || 0;
+            const conversions = conversionsRow.conversions || 0;
+            const conversionRate = visitors > 0 ? ((conversions / visitors) * 100).toFixed(1) : 0;
 
-                  const visitors = visitorsRow.visitors || 0;
-                  const pageViews = pageViewsRow.pageViews || 0;
-                  const activeUsers = activeUsersRow.activeUsers || 0;
-                  const conversions = conversionsRow.conversions || 0;
-                  const conversionRate = visitors > 0 ? ((conversions / visitors) * 100).toFixed(1) : 0;
+            res.json({
+              ok: true,
+              traffic: { todayVisitors: visitors, todayPageViews: pageViews, activeUsers: activeUsers, conversionRate: parseFloat(conversionRate) }
+            });
+          });
+        });
+      } else {
+        db.get("SELECT COUNT(*) as activeUsers FROM user_sessions WHERE is_active = 1 AND datetime(last_activity) > datetime('now', '-30 minutes')", [], (err, activeUsersRow) => {
+          if (err) return res.status(500).json({ ok: false, message: "Database error" });
 
-                  res.json({
-                    ok: true,
-                    traffic: {
-                      todayVisitors: visitors,
-                      todayPageViews: pageViews,
-                      activeUsers: activeUsers,
-                      conversionRate: parseFloat(conversionRate)
-                    }
-                  });
-                }
-              );
-            }
-          );
-        }
-      );
-    }
-  );
+          db.get(conversionsSql, [today], (err, conversionsRow) => {
+            if (err) return res.status(500).json({ ok: false, message: "Database error" });
+
+            const visitors = visitorsRow.visitors || 0;
+            const pageViews = pageViewsRow.pageViews || 0;
+            const activeUsers = activeUsersRow.activeUsers || 0;
+            const conversions = conversionsRow.conversions || 0;
+            const conversionRate = visitors > 0 ? ((conversions / visitors) * 100).toFixed(1) : 0;
+
+            res.json({
+              ok: true,
+              traffic: { todayVisitors: visitors, todayPageViews: pageViews, activeUsers: activeUsers, conversionRate: parseFloat(conversionRate) }
+            });
+          });
+        });
+      }
+    });
+  });
 });
 
 app.get("/api/admin/analytics/activity", requireAdmin, (req, res) => {
@@ -1169,36 +1252,24 @@ app.get("/api/admin/analytics/chart", requireAdmin, (req, res) => {
     days.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
 
     // Get visitors for this day
-    db.get(
-      "SELECT COUNT(DISTINCT session_id) as count FROM page_views WHERE date(timestamp) = ?",
-      [dateStr],
-      (err, row) => {
+    const visitorsCountSql = usePostgres ? "SELECT COUNT(DISTINCT session_id) as count FROM page_views WHERE DATE(timestamp) = $1" : "SELECT COUNT(DISTINCT session_id) as count FROM page_views WHERE date(timestamp) = ?";
+    const pageViewsCountSql = usePostgres ? "SELECT COUNT(*) as count FROM page_views WHERE DATE(timestamp) = $1" : "SELECT COUNT(*) as count FROM page_views WHERE date(timestamp) = ?";
+
+    db.get(visitorsCountSql, [dateStr], (err, row) => {
+      if (err) return;
+      visitors.push(row.count || 0);
+
+      // Get page views for this day
+      db.get(pageViewsCountSql, [dateStr], (err, row) => {
         if (err) return;
-        visitors.push(row.count || 0);
+        pageViews.push(row.count || 0);
 
-        // Get page views for this day
-        db.get(
-          "SELECT COUNT(*) as count FROM page_views WHERE date(timestamp) = ?",
-          [dateStr],
-          (err, row) => {
-            if (err) return;
-            pageViews.push(row.count || 0);
-
-            // Send response when all data is collected
-            if (visitors.length === 7 && pageViews.length === 7) {
-              res.json({
-                ok: true,
-                chart: {
-                  days,
-                  visitors,
-                  pageViews
-                }
-              });
-            }
-          }
-        );
-      }
-    );
+        // Send response when all data is collected
+        if (visitors.length === 7 && pageViews.length === 7) {
+          res.json({ ok: true, chart: { days, visitors, pageViews } });
+        }
+      });
+    });
   }
 });
 
@@ -1247,7 +1318,7 @@ app.post("/api/stimulator/log-attack", requireStimulator, (req, res) => {
 
   // Also log to a separate attack log table if it exists
   db.run(
-    "INSERT INTO attack_logs (attack_type, details, severity, ip_address, session_id, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+    "INSERT INTO attack_logs (attack_type, details, severity, ip_address, session_id, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
     [attackType, details || '', severity || 'medium', req.ip, req.session.id],
     (err) => {
       if (err) {
