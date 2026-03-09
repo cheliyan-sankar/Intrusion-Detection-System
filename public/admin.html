@@ -435,6 +435,144 @@
         margin-top: 16px;
       }
 
+      /* Real-time IDS Monitoring */
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--admin-bg);
+        border: 1px solid var(--admin-border);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--admin-text);
+      }
+
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--admin-success);
+      }
+
+      .status-dot.danger { background: var(--admin-danger); }
+      .status-dot.warning { background: var(--admin-warning); }
+
+      .realtime-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .realtime-stat {
+        padding: 12px;
+        background: var(--admin-bg);
+        border: 1px solid var(--admin-border);
+        border-radius: 10px;
+      }
+
+      .realtime-stat .k {
+        font-size: 12px;
+        color: var(--admin-text-light);
+        margin-bottom: 4px;
+      }
+
+      .realtime-stat .v {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--admin-accent);
+      }
+
+      .incident-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .incident-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px;
+        background: var(--admin-bg);
+        border: 1px solid var(--admin-border);
+        border-radius: 10px;
+      }
+
+      .incident-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .incident-title {
+        font-weight: 700;
+        color: var(--admin-primary);
+        font-size: 14px;
+      }
+
+      .incident-sub {
+        color: var(--admin-text-light);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .badge {
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        border: 1px solid var(--admin-border);
+        background: var(--admin-card);
+        color: var(--admin-text);
+        text-transform: uppercase;
+      }
+
+      .badge.high { border-color: var(--admin-danger); color: var(--admin-danger); }
+      .badge.medium { border-color: var(--admin-warning); color: var(--admin-warning); }
+      .badge.low { border-color: var(--admin-success); color: var(--admin-success); }
+
+      .alert-popup {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        width: min(520px, calc(100vw - 40px));
+        background: var(--admin-card);
+        border: 1px solid var(--admin-border);
+        border-left: 6px solid var(--admin-danger);
+        border-radius: 12px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+        padding: 16px;
+        z-index: 9999;
+      }
+
+      .alert-popup h4 {
+        margin: 0 0 6px 0;
+        color: var(--admin-primary);
+        font-size: 16px;
+      }
+
+      .alert-popup p {
+        margin: 0;
+        color: var(--admin-text-light);
+        font-size: 13px;
+      }
+
+      .alert-popup .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 12px;
+      }
+
       /* Logs Styles */
       .logs-container {
         max-height: 300px;
@@ -572,15 +710,48 @@
         <p id="loginError" class="hidden" style="color: var(--admin-danger); margin-top: 16px; text-align: center;">Invalid credentials</p>
       </div>
 
-      <!-- Navigation Tabs -->
-      <div class="admin-tabs">
-        <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
-        <button class="tab-btn" data-tab="products">📦 Products</button>
-      </div>
+      <div id="adminPanel" class="hidden">
+        <!-- Navigation Tabs -->
+        <div class="admin-tabs">
+          <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+          <button class="tab-btn" data-tab="products">📦 Products</button>
+        </div>
 
-      <!-- Dashboard Tab -->
-      <div id="dashboardTab" class="tab-content active">
-        <div class="dashboard-grid">
+        <!-- Dashboard Tab -->
+        <div id="dashboardTab" class="tab-content active">
+          <div class="dashboard-grid">
+          <!-- Live Monitoring -->
+          <div class="dashboard-card">
+            <h3 class="card-title">🛰️ Live Monitoring</h3>
+            <div class="status-pill">
+              <span id="idsDot" class="status-dot"></span>
+              <span id="idsStatus">IDS: Normal</span>
+              <span id="idsSeverity" class="badge low">low</span>
+            </div>
+
+            <div class="realtime-stats">
+              <div class="realtime-stat"><div class="k">User Count</div><div class="v" id="rtUserCount">0</div></div>
+              <div class="realtime-stat"><div class="k">Request Rate</div><div class="v" id="rtRps">0 rps</div></div>
+              <div class="realtime-stat"><div class="k">Response Time</div><div class="v" id="rtResp">0 ms</div></div>
+              <div class="realtime-stat"><div class="k">Error Rate</div><div class="v" id="rtErr">0%</div></div>
+            </div>
+
+            <div class="chart-container" style="height: 160px;">
+              <canvas id="liveChart" width="400" height="160"></canvas>
+            </div>
+          </div>
+
+          <!-- System Health -->
+          <div class="dashboard-card">
+            <h3 class="card-title">🩺 System Health</h3>
+            <div class="realtime-stats">
+              <div class="realtime-stat"><div class="k">Load (1m)</div><div class="v" id="rtLoad">0</div></div>
+              <div class="realtime-stat"><div class="k">Memory (RSS)</div><div class="v" id="rtMem">0 MB</div></div>
+              <div class="realtime-stat"><div class="k">Event Loop Lag (p95)</div><div class="v" id="rtLag">0 ms</div></div>
+              <div class="realtime-stat"><div class="k">Active Simulator</div><div class="v" id="rtSim">No</div></div>
+            </div>
+          </div>
+
           <!-- Traffic Overview -->
           <div class="dashboard-card">
             <h3 class="card-title">🚦 Traffic Overview</h3>
@@ -602,6 +773,18 @@
                 <div class="stat-label">Conversion Rate</div>
               </div>
             </div>
+          </div>
+
+          <!-- Alerts -->
+          <div class="dashboard-card">
+            <h3 class="card-title">🚨 Alert Management</h3>
+            <div id="alertsList" class="incident-list"></div>
+          </div>
+
+          <!-- Incident Log -->
+          <div class="dashboard-card">
+            <h3 class="card-title">📚 Incident Log History</h3>
+            <div id="incidentLog" class="incident-list"></div>
           </div>
 
           <!-- Traffic Graph -->
@@ -631,6 +814,7 @@
               </div>
             </div>
           </div>
+        </div>
         </div>
       </div>
 
@@ -735,7 +919,18 @@
         </div>
       </div>
     </div>
+    </div>
 
     <script src="/admin.js"></script>
+
+    <!-- Alert Popup -->
+    <div id="alertPopup" class="alert-popup hidden" aria-live="assertive">
+      <h4 id="alertTitle">Potential Attack Detected</h4>
+      <p id="alertDetails">Waiting for alerts…</p>
+      <div class="row">
+        <button id="alertAckBtn" class="btn btn-primary">Acknowledge</button>
+        <button id="alertDismissBtn" class="btn btn-outline">Dismiss</button>
+      </div>
+    </div>
   </body>
 </html>

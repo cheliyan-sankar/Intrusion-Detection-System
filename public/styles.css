@@ -31,6 +31,20 @@ body {
   z-index: 100;
 }
 
+.realtime-strip {
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 8px 24px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.realtime-strip span {
+  display: block;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
 .header-top {
   display: flex;
   align-items: center;

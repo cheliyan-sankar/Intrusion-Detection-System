@@ -145,7 +145,6 @@
       color: var(--error);
       font-size: 14px;
       margin-top: 8px;
-      display: none;
     }
 
     .hidden {
@@ -422,41 +421,44 @@
         <button type="submit" class="btn btn-primary" style="width: 100%;">Login</button>
       </form>
 
-      <div id="loginError" class="error-message">Invalid credentials</div>
+      <div id="loginError" class="error-message hidden">Invalid credentials</div>
     </div>
     <!-- Attack Types Selection -->
     <div id="attackTypesPanel" class="stimulator-panel hidden">
-      <h2 style="text-align: center; margin-bottom: 30px; color: var(--primary);">Select Attack Types</h2>
+      <h2 style="text-align: center; margin-bottom: 18px; color: var(--primary);">Attack Simulator Dashboard</h2>
+
+      <div style="display: flex; justify-content: center; gap: 12px; align-items: center; margin-bottom: 18px; flex-wrap: wrap;">
+        <label for="intensitySelect" style="font-weight: 600; color: var(--text);">Intensity</label>
+        <select id="intensitySelect" class="form-input" style="max-width: 220px;">
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+
+      <div style="text-align: center; margin-top: -10px; margin-bottom: 25px;">
+        <button id="startAttackBtnTop" class="btn btn-primary" style="font-size: 1.1rem; padding: 12px 30px;" disabled>🚀 Start Attack Simulation</button>
+      </div>
 
       <div class="attack-types">
-        <div class="attack-card dos" data-attack="dos">
-          <h3>DoS Attack</h3>
-          <p>Simulate Denial of Service by flooding the server with requests to overwhelm resources.</p>
-        </div>
-
         <div class="attack-card ddos" data-attack="ddos">
-          <h3>DDoS Attack</h3>
-          <p>Simulate Distributed DoS with multiple concurrent connections from different sources.</p>
+          <h3>DDoS</h3>
+          <p>High request-rate flooding across common endpoints.</p>
         </div>
 
-        <div class="attack-card brute" data-attack="brute">
+        <div class="attack-card dos" data-attack="bot">
+          <h3>Bot Traffic</h3>
+          <p>API-heavy automated browsing and scraping patterns.</p>
+        </div>
+
+        <div class="attack-card brute" data-attack="brute_force">
           <h3>Brute Force</h3>
-          <p>Simulate brute force login attempts with various username/password combinations.</p>
+          <p>Repeated login attempts against the authentication endpoint.</p>
         </div>
 
-        <div class="attack-card sql" data-attack="sql">
-          <h3>SQL Injection</h3>
-          <p>Simulate SQL injection attempts with malicious SQL payloads in requests.</p>
-        </div>
-
-        <div class="attack-card xss" data-attack="xss">
-          <h3>XSS Attack</h3>
-          <p>Simulate Cross-Site Scripting attempts with malicious script injections.</p>
-        </div>
-
-        <div class="attack-card scan" data-attack="scan">
-          <h3>Port Scanning</h3>
-          <p>Simulate network scanning attempts to discover open ports and services.</p>
+        <div class="attack-card scan" data-attack="spike_load">
+          <h3>Spike Load</h3>
+          <p>Short burst traffic spike that causes sudden degradation.</p>
         </div>
       </div>
 
@@ -574,6 +576,7 @@
     const trafficModeBtn = document.getElementById("trafficModeBtn");
     const attackModeBtn = document.getElementById("attackModeBtn");
     const startAttackBtn = document.getElementById("startAttackBtn");
+    const startAttackBtnTop = document.getElementById("startAttackBtnTop");
 
     // Attack cards
     const attackCards = document.querySelectorAll(".attack-card");
@@ -606,15 +609,26 @@
     const progressFillEl = document.getElementById("progressFill");
     const activityLogEl = document.getElementById("activityLog");
 
+    // Intensity selector
+    const intensitySelect = document.getElementById('intensitySelect');
+
     // State variables
     let isRunning = false;
     let isAttackMode = false;
-    let selectedAttacks = new Set();
+    let selectedAttack = null;
     let visitsGenerated = 0;
     let actionsPerformed = 0;
     let totalRequests = 0;
     let successfulRequests = 0;
     let abortController = null;
+
+    function setAttackStartButtonsState({ disabled, text } = {}) {
+      [startAttackBtn, startAttackBtnTop].forEach((btn) => {
+        if (!btn) return;
+        if (typeof disabled === 'boolean') btn.disabled = disabled;
+        if (typeof text === 'string') btn.textContent = text;
+      });
+    }
 
     // Security helpers: sanitize and safely set input values
     function sanitizeString(str) {
@@ -684,17 +698,18 @@
       // Logout
       logoutBtn.addEventListener("click", handleLogout);
 
-      // Mode switching
-      trafficModeBtn.addEventListener("click", () => switchMode(false));
-      attackModeBtn.addEventListener("click", () => switchMode(true));
+      // Mode switching (guard if UI changes)
+      if (trafficModeBtn) trafficModeBtn.addEventListener("click", () => switchMode(false));
+      if (attackModeBtn) attackModeBtn.addEventListener("click", () => switchMode(true));
 
       // Attack type selection
       attackCards.forEach(card => {
         card.addEventListener("click", () => toggleAttackSelection(card));
       });
 
-      // Start attack button
+      // Start/Stop attack button
       startAttackBtn.addEventListener("click", startAttackSimulation);
+      if (startAttackBtnTop) startAttackBtnTop.addEventListener("click", startAttackSimulation);
 
       // Control sliders
       visitCountEl.addEventListener("input", () => updateControlValues());
@@ -718,9 +733,12 @@
     function toggleStimulator(isStimulator) {
       if (isStimulator) {
         loginPanel.classList.add("hidden");
-        stimulatorPanel.classList.remove("hidden");
+        // Default to Attack Simulation mode after auth
+        switchMode(true);
       } else {
         stimulatorPanel.classList.add("hidden");
+        attackTypesPanel.classList.add("hidden");
+        attackWarning.classList.add("hidden");
         loginPanel.classList.remove("hidden");
       }
     }
@@ -813,8 +831,7 @@
 
       // Reset attack button if in attack mode
       if (isAttackMode) {
-        startAttackBtn.disabled = selectedAttacks.size === 0;
-        startAttackBtn.textContent = '🚀 Start Attack Simulation';
+        stopBackendAttack();
       } else {
         updateUIState(false);
       }
@@ -1002,13 +1019,29 @@
       }
 
       return fetch(url, options)
-        .then(response => {
-          if (response.ok) {
-            successfulRequests++;
-            updateSuccessRate();
-            return response.json();
-          } else {
+        .then(async (response) => {
+          if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
+          }
+
+          successfulRequests++;
+          updateSuccessRate();
+
+          if (response.status === 204) return null;
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (contentType.includes('application/json')) {
+            try {
+              return await response.json();
+            } catch {
+              return null;
+            }
+          }
+
+          // For HTML/text responses (e.g. GET /), treat as success.
+          try {
+            return await response.text();
+          } catch {
+            return null;
           }
         });
     }
@@ -1076,328 +1109,100 @@
         document.querySelector('.header p').textContent = 'Simulate website traffic for testing analytics and performance';
       }
 
-      // Reset attack selections when switching modes
-      selectedAttacks.clear();
+      // Reset attack selection when switching modes
+      selectedAttack = null;
       attackCards.forEach(card => card.classList.remove("selected"));
-      startAttackBtn.disabled = true;
+      setAttackStartButtonsState({ disabled: true, text: '🚀 Start Attack Simulation' });
     }
 
     function toggleAttackSelection(card) {
       const attackType = card.dataset.attack;
 
-      if (selectedAttacks.has(attackType)) {
-        selectedAttacks.delete(attackType);
-        card.classList.remove("selected");
+      // Single-selection (simpler + matches dashboard spec)
+      if (selectedAttack === attackType) {
+        selectedAttack = null;
+        card.classList.remove('selected');
       } else {
-        selectedAttacks.add(attackType);
-        card.classList.add("selected");
+        selectedAttack = attackType;
+        attackCards.forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
       }
 
-      startAttackBtn.disabled = selectedAttacks.size === 0;
+      updateAttackButtons();
     }
 
     function startAttackSimulation() {
-      if (selectedAttacks.size === 0 || isRunning) return;
+      if (!selectedAttack) return;
 
+      // Toggle stop if already running
+      if (isRunning) {
+        stopBackendAttack();
+        return;
+      }
+
+      startBackendAttack();
+    }
+
+    function updateAttackButtons() {
+      setAttackStartButtonsState({
+        disabled: !selectedAttack,
+        text: isRunning ? '⏹️ Stop Attack' : '🚀 Start Attack Simulation'
+      });
+    }
+
+    async function startBackendAttack() {
+      if (!selectedAttack) return;
       isRunning = true;
-      abortController = new AbortController();
-      startAttackBtn.disabled = true;
-      startAttackBtn.textContent = '⏹️ Stop Attack';
+      updateAttackButtons();
+      updateStatus('Attack simulation running...');
 
-      updateStatus("Attack simulation running...");
+      const intensity = intensitySelect ? intensitySelect.value : 'low';
+      logActivity('warning', `Starting attack: ${selectedAttack} (${intensity})`);
 
-      logActivity("warning", `Starting attack simulation: ${Array.from(selectedAttacks).join(', ')}`);
-
-      // Run all selected attacks concurrently
-      const attackPromises = Array.from(selectedAttacks).map(attackType => {
-        return runAttackSimulation(attackType);
-      });
-
-      Promise.allSettled(attackPromises).then(() => {
-        finishAttackSimulation();
-      });
-    }
-
-    function runAttackSimulation(attackType) {
-      return new Promise((resolve) => {
-        switch (attackType) {
-          case 'dos':
-            simulateDoSAttack(resolve);
-            break;
-          case 'ddos':
-            simulateDDoSAttack(resolve);
-            break;
-          case 'brute':
-            simulateBruteForceAttack(resolve);
-            break;
-          case 'sql':
-            simulateSQLInjectionAttack(resolve);
-            break;
-          case 'xss':
-            simulateXSSAttack(resolve);
-            break;
-          case 'scan':
-            simulatePortScanAttack(resolve);
-            break;
-          default:
-            resolve();
+      try {
+        const res = await fetch('/api/simulator/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ attackType: selectedAttack, intensity })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          isRunning = false;
+          updateAttackButtons();
+          updateStatus('Failed');
+          logActivity('error', data.message || 'Failed to start attack');
+          return;
         }
-      });
-    }
 
-    function simulateDoSAttack(callback) {
-      const requestCount = 1000; // High volume for DoS
-      let completed = 0;
-
-      logActivity("error", "DoS Attack: Flooding server with requests...");
-      logAttackToBackend('dos', 'Starting DoS attack simulation', 'high');
-
-      for (let i = 0; i < requestCount; i++) {
-        if (!isRunning) return;
-
-        setTimeout(() => {
-          if (!isRunning) return;
-
-          // Rapid fire requests to overwhelm
-          makeRequest("/", "GET")
-            .then(() => {
-              totalRequests++;
-              successfulRequests++;
-              updateSuccessRate();
-              logActivity("error", `DoS request ${totalRequests} sent`);
-            })
-            .catch(() => {
-              totalRequests++;
-              logActivity("error", "DoS request failed/blocked");
-            })
-            .finally(() => {
-              completed++;
-              if (completed >= requestCount) {
-                logActivity("warning", "DoS attack completed");
-                logAttackToBackend('dos', `DoS attack completed: ${requestCount} requests sent`, 'high');
-                callback();
-              }
-            });
-        }, i * 10); // Very rapid requests
+        logActivity('error', `Attack started: ${data.attackType} (${data.intensity})`);
+      } catch (e) {
+        isRunning = false;
+        updateAttackButtons();
+        updateStatus('Failed');
+        logActivity('error', 'Failed to start attack');
       }
     }
 
-    function simulateDDoSAttack(callback) {
-      const concurrentUsers = 50; // Distributed attack
-      const requestsPerUser = 50;
-      let completedUsers = 0;
-
-      logActivity("error", "DDoS Attack: Distributed attack from multiple sources...");
-
-      for (let user = 0; user < concurrentUsers; user++) {
-        setTimeout(() => {
-          let userRequests = 0;
-
-          for (let req = 0; req < requestsPerUser; req++) {
-            if (!isRunning) return;
-
-            setTimeout(() => {
-              if (!isRunning) return;
-
-              makeRequest("/", "GET")
-                .then(() => {
-                  totalRequests++;
-                  successfulRequests++;
-                  updateSuccessRate();
-                })
-                .catch(() => {
-                  totalRequests++;
-                })
-                .finally(() => {
-                  userRequests++;
-                  if (userRequests >= requestsPerUser) {
-                    completedUsers++;
-                    if (completedUsers >= concurrentUsers) {
-                      logActivity("warning", "DDoS attack completed");
-                      callback();
-                    }
-                  }
-                });
-            }, req * 50);
-          }
-        }, user * 100);
+    async function stopBackendAttack() {
+      if (!isRunning) return;
+      try {
+        await fetch('/api/simulator/stop', { method: 'POST', credentials: 'same-origin' });
+      } catch {
+        // ignore
       }
-    }
-
-    function simulateBruteForceAttack(callback) {
-      const usernames = ['admin', 'root', 'user', 'test', 'administrator'];
-      const passwords = ['password', '123456', 'admin', 'letmein', 'qwerty', 'password123'];
-      let attempts = 0;
-      const maxAttempts = 100;
-
-      logActivity("warning", "Brute Force Attack: Attempting login combinations...");
-      logAttackToBackend('brute_force', 'Starting brute force attack simulation', 'high');
-
-      for (let i = 0; i < maxAttempts; i++) {
-        if (!isRunning) return;
-
-        setTimeout(() => {
-          if (!isRunning) return;
-
-          const username = usernames[Math.floor(Math.random() * usernames.length)];
-          const password = passwords[Math.floor(Math.random() * passwords.length)];
-
-          makeRequest("/api/user/login", "POST", { username, password })
-            .then(() => {
-              logActivity("error", `Brute force attempt: ${username}/${password} - BLOCKED`);
-              logAttackToBackend('brute_force', `Blocked attempt: ${username}/${password}`, 'high');
-            })
-            .catch(() => {
-              logActivity("error", `Brute force attempt: ${username}/${password} - FAILED`);
-              logAttackToBackend('brute_force', `Failed attempt: ${username}/${password}`, 'medium');
-            })
-            .finally(() => {
-              attempts++;
-              totalRequests++;
-              if (attempts >= maxAttempts) {
-                logActivity("warning", "Brute force attack completed");
-                logAttackToBackend('brute_force', `Brute force attack completed: ${maxAttempts} attempts`, 'high');
-                callback();
-              }
-            });
-        }, i * 200);
-      }
-    }
-
-    function simulateSQLInjectionAttack(callback) {
-      const payloads = [
-        "' OR '1'='1",
-        "'; DROP TABLE users; --",
-        "' UNION SELECT * FROM users --",
-        "admin' --",
-        "' OR 1=1 --",
-        "') OR ('1'='1"
-      ];
-      let attempts = 0;
-
-      logActivity("warning", "SQL Injection Attack: Testing for SQL vulnerabilities...");
-
-      payloads.forEach((payload, index) => {
-        if (!isRunning) return;
-
-        setTimeout(() => {
-          if (!isRunning) return;
-
-          // Try SQL injection in login
-          makeRequest("/api/user/login", "POST", {
-            username: payload,
-            password: "test"
-          })
-          .then(() => {
-            logActivity("error", `SQL injection attempt ${index + 1}: ${payload.substring(0, 20)}... - POTENTIAL VULNERABILITY`);
-          })
-          .catch(() => {
-            logActivity("success", `SQL injection attempt ${index + 1}: ${payload.substring(0, 20)}... - BLOCKED`);
-          })
-          .finally(() => {
-            attempts++;
-            totalRequests++;
-            if (attempts >= payloads.length) {
-              logActivity("warning", "SQL injection attack completed");
-              callback();
-            }
-          });
-        }, index * 500);
-      });
-    }
-
-    function simulateXSSAttack(callback) {
-      // Store XSS payloads in an encoded form so they are not present as raw <script> tags
-      const payloads = [
-        "\\x3Cscript\\x3Ealert('XSS')\\x3C\\/script\\x3E",
-        "\\x3Cimg src=x onerror=alert('XSS')\\x3E",
-        "javascript:alert('XSS')",
-        "\\x3Csvg onload=alert('XSS')\\x3E",
-        "'\\x3E\\x3Cscript\\x3Ealert('XSS')\\x3C\\/script\\x3E"
-      ];
-      let attempts = 0;
-
-      logActivity("warning", "XSS Attack: Testing for cross-site scripting vulnerabilities...");
-
-      payloads.forEach((encPayload, index) => {
-        if (!isRunning) return;
-
-        setTimeout(() => {
-          if (!isRunning) return;
-
-          // Decode \xHH sequences into characters, but never insert into DOM
-          const decoded = encPayload.replace(/\\x([0-9A-Fa-f]{2})/g, (m, hex) => String.fromCharCode(parseInt(hex, 16)));
-
-          // Try XSS in search or other input fields by sending payload to the server
-          makeRequest("/api/products?search=" + encodeURIComponent(decoded), "GET")
-          .then(() => {
-            logActivity("error", `XSS attempt ${index + 1}: ${encPayload.substring(0, 40)}... - POTENTIAL VULNERABILITY`);
-          })
-          .catch(() => {
-            logActivity("success", `XSS attempt ${index + 1}: ${encPayload.substring(0, 40)}... - BLOCKED`);
-          })
-          .finally(() => {
-            attempts++;
-            totalRequests++;
-            if (attempts >= payloads.length) {
-              logActivity("warning", "XSS attack completed");
-              callback();
-            }
-          });
-        }, index * 300);
-      });
-    }
-
-    function simulatePortScanAttack(callback) {
-      const ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 993, 995, 3306, 5432];
-      let scanned = 0;
-
-      logActivity("warning", "Port Scan Attack: Scanning for open ports and services...");
-
-      ports.forEach((port, index) => {
-        if (!isRunning) return;
-
-        setTimeout(() => {
-          if (!isRunning) return;
-
-          // Simulate port scanning by making requests to different endpoints
-          const endpoints = [
-            "/",
-            "/api/products",
-            "/api/user/me",
-            "/admin.html",
-            "/api/admin/analytics/traffic"
-          ];
-
-          const endpoint = endpoints[Math.floor(Math.random() * endpoints.length)];
-
-          makeRequest(endpoint, "GET")
-            .then(() => {
-              logActivity("warning", `Port scan: Port ${port} - OPEN (endpoint: ${endpoint})`);
-            })
-            .catch(() => {
-              logActivity("info", `Port scan: Port ${port} - CLOSED/FILTERED`);
-            })
-            .finally(() => {
-              scanned++;
-              totalRequests++;
-              if (scanned >= ports.length) {
-                logActivity("warning", "Port scan completed");
-                callback();
-              }
-            });
-        }, index * 100);
-      });
-    }
-
-    function finishAttackSimulation() {
       isRunning = false;
-      startAttackBtn.disabled = false;
-      startAttackBtn.textContent = '🚀 Start Attack Simulation';
-      updateStatus("Attack simulation completed");
-      logActivity("info", "All attack simulations completed");
+      updateAttackButtons();
+      updateStatus('Stopped');
+      logActivity('info', 'Attack stopped');
+    }
+
+    // Kick things off: bind handlers + check session.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
     }
   </script>
 </body>
-</html></content>
-<parameter name="filePath">/workspaces/Intrusion-Detection-System/public/stimulator.html
+</html>

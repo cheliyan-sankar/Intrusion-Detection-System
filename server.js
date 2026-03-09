@@ -1,10 +1,15 @@
 const path = require("path");
 const fs = require("fs");
+const http = require('http');
 const express = require("express");
 const session = require("express-session");
 const sqlite3 = require("sqlite3").verbose();
 const { Pool } = require('pg');
 const bcrypt = require("bcrypt");
+const { WebSocketServer } = require('ws');
+const { createMetrics } = require('./realtime/metrics');
+const { createDetector } = require('./realtime/detector');
+const { createAttackSimulator } = require('./realtime/simulator');
 require("dotenv").config();
 
 const app = express();
@@ -107,7 +112,28 @@ if (usePostgres) {
     db.run(
       "CREATE TABLE IF NOT EXISTS attack_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, attack_type TEXT, details TEXT, severity TEXT, ip_address TEXT, session_id TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP)"
     );
+
+    // IDS incidents table (real-time detection)
+    db.run(
+      "CREATE TABLE IF NOT EXISTS ids_incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, attack_type TEXT NOT NULL, severity TEXT NOT NULL, affected_endpoints TEXT, metrics_json TEXT, status TEXT DEFAULT 'open', created_at TEXT DEFAULT CURRENT_TIMESTAMP, acked_at TEXT)"
+    );
   });
+}
+
+// Ensure IDS table exists for Postgres installs migrated before this feature.
+if (usePostgres) {
+  db.run(
+    `CREATE TABLE IF NOT EXISTS ids_incidents (
+      id SERIAL PRIMARY KEY,
+      attack_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      affected_endpoints TEXT,
+      metrics_json TEXT,
+      status TEXT DEFAULT 'open',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+      acked_at TIMESTAMP WITH TIME ZONE
+    )`
+  );
 }
 
 // Seed sample products if database is empty
@@ -685,14 +711,20 @@ db.get("SELECT COUNT(*) as count FROM products", (err, row) => {
 });
 
 app.use(express.json());
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: { httpOnly: true }
-  })
-);
+const sessionMiddleware = session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, sameSite: 'lax' }
+});
+app.use(sessionMiddleware);
+
+// Real-time metrics (must come early)
+const metrics = createMetrics({
+  windowSeconds: Number(process.env.METRICS_WINDOW_SECONDS) || 60,
+  snapshotSeconds: Number(process.env.METRICS_SNAPSHOT_SECONDS) || 10
+});
+app.use(metrics.middleware);
 
 // Analytics middleware (must come before static files)
 app.use((req, res, next) => {
@@ -701,10 +733,12 @@ app.use((req, res, next) => {
   const userAgent = req.get('User-Agent') || '';
   const ipAddress = req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 'unknown';
 
-  // Track page views for main pages and HTML files (but not API calls or static assets)
-  if ((req.path.endsWith('.html') || req.path === '/' || req.path === '/admin.html') &&
-      !req.path.startsWith('/api/') &&
-      !req.path.includes('.')) {
+  // Track page views for GET page navigations (exclude API calls).
+  if (
+    req.method === 'GET' &&
+    !req.path.startsWith('/api/') &&
+    (req.path === '/' || req.path.endsWith('.html'))
+  ) {
     const page = req.path === '/' ? '/index.html' : req.path;
 
     db.run(
@@ -759,6 +793,10 @@ const requireStimulator = (req, res, next) => {
 
   return res.status(401).json({ ok: false, message: "Unauthorized" });
 };
+
+// IDS detector + server-side simulator
+const detector = createDetector({ db, usePostgres });
+const simulator = createAttackSimulator({ db, baseUrl: `http://127.0.0.1:${PORT}` });
 
 app.get("/api/products", (req, res) => {
   const { category, search, minPrice, maxPrice, sort } = req.query;
@@ -1273,6 +1311,65 @@ app.get("/api/admin/analytics/chart", requireAdmin, (req, res) => {
   }
 });
 
+// Real-time IDS / incident APIs
+app.get('/api/admin/ids/incidents', requireAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || 50;
+    const incidents = await detector.listIncidents(limit);
+    return res.json({ ok: true, incidents });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
+app.post('/api/admin/ids/incidents/:id/ack', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ ok: false, message: 'Invalid id' });
+    await detector.ackIncident(id);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
+// Attack simulator control APIs
+app.get('/api/simulator/status', requireStimulator, (req, res) => {
+  return res.json({ ok: true, status: simulator.status() });
+});
+
+app.post('/api/simulator/start', requireStimulator, async (req, res) => {
+  try {
+    const { attackType, intensity } = req.body || {};
+
+    const normalized = String(attackType || '').toLowerCase();
+    const mapped = normalized === 'bot' ? 'bot_traffic'
+      : normalized === 'bot_traffic' ? 'bot_traffic'
+      : normalized === 'bruteforce' ? 'brute_force'
+      : normalized === 'brute' ? 'brute_force'
+      : normalized === 'brute_force' ? 'brute_force'
+      : normalized === 'spike' ? 'spike_load'
+      : normalized === 'spike_load' ? 'spike_load'
+      : normalized === 'ddos' ? 'ddos'
+      : '';
+
+    const result = await simulator.start({ attackType: mapped, intensity });
+    if (!result.ok) return res.status(400).json(result);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
+app.post('/api/simulator/stop', requireStimulator, async (req, res) => {
+  try {
+    const result = await simulator.stop();
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
 // Traffic stimulator routes
 app.post("/api/stimulator/login", (req, res) => {
   const { username, password } = req.body || {};
@@ -1392,6 +1489,115 @@ const formatActivityMessage = (row, username) => {
   }
 };
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+
+function safeJsonParse(buf) {
+  try {
+    return JSON.parse(buf.toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function safeSend(ws, payload) {
+  try {
+    ws.send(JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+}
+
+function broadcast(payload) {
+  const data = JSON.stringify(payload);
+  for (const client of wss.clients) {
+    if (client.readyState === 1) {
+      try {
+        client.send(data);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+server.on('upgrade', (req, socket, head) => {
+  let pathname = '';
+  try {
+    pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+
+  if (pathname !== '/ws') {
+    socket.destroy();
+    return;
+  }
+
+  // Attach express-session to the WS request for auth/role
+  const fakeRes = {
+    getHeader() { return undefined; },
+    setHeader() {},
+    end() {}
+  };
+
+  sessionMiddleware(req, fakeRes, () => {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  });
+});
+
+wss.on('connection', (ws, req) => {
+  // Default role: storefront (e-commerce). Override for authenticated admin/stimulator sessions.
+  let moduleName = 'ecommerce';
+  if (req.session && req.session.isAdmin) moduleName = 'admin';
+  if (req.session && req.session.isStimulator) moduleName = 'simulator';
+
+  ws._moduleName = metrics.recordClientHello(moduleName);
+  safeSend(ws, { type: 'hello', data: { module: ws._moduleName } });
+
+  if (ws._moduleName === 'admin') {
+    detector.listIncidents(50)
+      .then(list => safeSend(ws, { type: 'incidents', data: list }))
+      .catch(() => {});
+  }
+
+  ws.on('message', (msg) => {
+    const parsed = safeJsonParse(msg);
+    if (!parsed) return;
+
+    // Optional client hint (do not trust over authenticated role)
+    if (parsed.type === 'hello' && parsed.module && !(req.session && (req.session.isAdmin || req.session.isStimulator))) {
+      ws._clientHint = String(parsed.module);
+    }
+  });
+
+  ws.on('close', () => {
+    metrics.recordClientBye(ws._moduleName);
+  });
+});
+
+// Broadcast live metrics + IDS status every second
+setInterval(async () => {
+  try {
+    const snap = metrics.snapshot();
+    const { incident, status } = await detector.tick(snap);
+
+    snap.ids = status;
+    snap.simulator = simulator.status();
+
+    broadcast({ type: 'metrics', data: snap });
+    if (incident) {
+      broadcast({ type: 'alert', data: incident });
+    }
+  } catch (err) {
+    // Keep the loop alive even if something transient fails.
+  }
+}, 1000);
+
+server.listen(PORT, () => {
   console.log(`DemoKart running on http://localhost:${PORT}`);
 });
+

@@ -14,6 +14,284 @@ const avgPriceEl = document.getElementById("avgPrice");
 // Loading state to prevent multiple simultaneous requests
 let isLoadingProducts = false;
 
+// Real-time state
+let ws = null;
+let wsShouldReconnect = false;
+let lastIncidentIdForPopup = null;
+let incidentsCache = [];
+
+const liveSeries = {
+  rps: []
+};
+
+const clampSeries = (arr, max) => {
+  while (arr.length > max) arr.shift();
+};
+
+const formatNumber = (n, digits = 1) => {
+  const x = Number(n);
+  if (Number.isNaN(x)) return '0';
+  return x.toFixed(digits);
+};
+
+const formatPct = (n) => {
+  const x = Number(n);
+  if (Number.isNaN(x)) return '0%';
+  return `${Math.round(x)}%`;
+};
+
+function severityBadgeClass(sev) {
+  const s = String(sev || 'low').toLowerCase();
+  if (s === 'high') return 'high';
+  if (s === 'medium') return 'medium';
+  return 'low';
+}
+
+function setIdsStatus(status) {
+  if (!idsDot || !idsStatusEl || !idsSeverityEl) return;
+  const underAttack = Boolean(status && status.underAttack);
+
+  if (!underAttack) {
+    idsDot.classList.remove('danger', 'warning');
+    idsStatusEl.textContent = 'IDS: Normal';
+    idsSeverityEl.textContent = 'low';
+    idsSeverityEl.className = 'badge low';
+    return;
+  }
+
+  const threat = status.threat || {};
+  const sev = String(threat.severity || 'medium').toLowerCase();
+  idsStatusEl.textContent = `IDS: Potential Attack (${threat.attackType || 'Unknown'})`;
+  idsSeverityEl.textContent = sev;
+  idsSeverityEl.className = `badge ${severityBadgeClass(sev)}`;
+
+  idsDot.classList.remove('danger', 'warning');
+  if (sev === 'high') idsDot.classList.add('danger');
+  else idsDot.classList.add('warning');
+}
+
+function drawLiveChart() {
+  if (!liveChart) return;
+  const ctx = liveChart.getContext('2d');
+  if (!ctx) return;
+
+  const w = liveChart.width;
+  const h = liveChart.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // grid
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = 10 + ((h - 20) / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(10, y);
+    ctx.lineTo(w - 10, y);
+    ctx.stroke();
+  }
+
+  const values = liveSeries.rps;
+  if (!values.length) return;
+  const max = Math.max(10, ...values);
+  const xStep = (w - 20) / Math.max(1, values.length - 1);
+  const yScale = (h - 20) / (max || 1);
+
+  ctx.strokeStyle = '#3182ce';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = 10 + i * xStep;
+    const y = h - 10 - (v * yScale);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  ctx.fillStyle = '#718096';
+  ctx.font = '12px Inter';
+  ctx.textAlign = 'left';
+  ctx.fillText(`RPS (max ${Math.round(max)})`, 10, 14);
+}
+
+function renderIncidentItem(incident, { showAck } = {}) {
+  const item = document.createElement('div');
+  item.className = 'incident-item';
+
+  const meta = document.createElement('div');
+  meta.className = 'incident-meta';
+
+  const title = document.createElement('div');
+  title.className = 'incident-title';
+  title.textContent = `#${incident.id} • ${incident.attackType}`;
+
+  const endpoints = (incident.affectedEndpoints || []).join(' | ');
+  const sub = document.createElement('div');
+  sub.className = 'incident-sub';
+  sub.textContent = `${incident.timestamp} • Affected: ${endpoints || '—'}`;
+
+  meta.append(title, sub);
+
+  const right = document.createElement('div');
+  right.style.display = 'flex';
+  right.style.alignItems = 'center';
+  right.style.gap = '10px';
+
+  const badge = document.createElement('span');
+  badge.className = `badge ${severityBadgeClass(incident.severity)}`;
+  badge.textContent = incident.severity;
+  right.appendChild(badge);
+
+  if (showAck) {
+    const ackBtn = document.createElement('button');
+    ackBtn.className = 'btn btn-outline';
+    ackBtn.textContent = 'Ack';
+    ackBtn.addEventListener('click', () => ackIncident(incident.id));
+    right.appendChild(ackBtn);
+  }
+
+  item.append(meta, right);
+  return item;
+}
+
+function renderIncidents(incidents) {
+  incidentsCache = Array.isArray(incidents) ? incidents : [];
+  if (alertsListEl) alertsListEl.innerHTML = '';
+  if (incidentLogEl) incidentLogEl.innerHTML = '';
+
+  const open = incidentsCache.filter(i => i.status === 'open');
+  const recent = incidentsCache.slice(0, 20);
+
+  if (alertsListEl) {
+    if (!open.length) {
+      const empty = document.createElement('div');
+      empty.style.color = 'var(--admin-text-light)';
+      empty.textContent = 'No active alerts.';
+      alertsListEl.appendChild(empty);
+    } else {
+      open.slice(0, 10).forEach(i => alertsListEl.appendChild(renderIncidentItem(i, { showAck: true })));
+    }
+  }
+
+  if (incidentLogEl) {
+    if (!recent.length) {
+      const empty = document.createElement('div');
+      empty.style.color = 'var(--admin-text-light)';
+      empty.textContent = 'No incidents yet.';
+      incidentLogEl.appendChild(empty);
+    } else {
+      recent.forEach(i => incidentLogEl.appendChild(renderIncidentItem(i, { showAck: false })));
+    }
+  }
+}
+
+function showAlertPopup(incident) {
+  if (!alertPopupEl || !alertTitleEl || !alertDetailsEl) return;
+  lastIncidentIdForPopup = incident?.id || null;
+  const endpoints = (incident?.affectedEndpoints || []).join(' | ');
+  alertTitleEl.textContent = `Potential Attack Detected: ${incident.attackType} (${incident.severity})`;
+  alertDetailsEl.textContent = `${incident.timestamp} • Affected: ${endpoints || '—'}`;
+  alertPopupEl.classList.remove('hidden');
+}
+
+function hideAlertPopup() {
+  if (!alertPopupEl) return;
+  alertPopupEl.classList.add('hidden');
+}
+
+async function ackIncident(id) {
+  try {
+    const res = await fetch(`/api/admin/ids/incidents/${id}/ack`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) return;
+    await refreshIncidents();
+    hideAlertPopup();
+  } catch {
+    // ignore
+  }
+}
+
+async function refreshIncidents() {
+  try {
+    const res = await fetch('/api/admin/ids/incidents?limit=50');
+    const data = await res.json();
+    if (data && data.ok) renderIncidents(data.incidents);
+  } catch {
+    // ignore
+  }
+}
+
+function connectRealtime() {
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  wsShouldReconnect = true;
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+
+  ws.addEventListener('open', () => {
+    try {
+      ws.send(JSON.stringify({ type: 'hello', module: 'admin' }));
+    } catch {
+      // ignore
+    }
+  });
+
+  ws.addEventListener('message', (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (!msg || !msg.type) return;
+
+    if (msg.type === 'metrics' && msg.data) {
+      const m = msg.data;
+      if (rtUserCountEl) rtUserCountEl.textContent = String(m.userCount ?? 0);
+      if (rtRpsEl) rtRpsEl.textContent = `${formatNumber(m.requestRate, 1)} rps`;
+      if (rtRespEl) rtRespEl.textContent = `${Math.round(m.responseTimeMs?.avg || 0)} ms`;
+      if (rtErrEl) rtErrEl.textContent = formatPct(m.errorRate);
+      if (rtLoadEl) rtLoadEl.textContent = formatNumber(m.serverLoad?.load1 || 0, 2);
+      if (rtMemEl) rtMemEl.textContent = `${formatNumber(m.serverLoad?.memRssMb || 0, 1)} MB`;
+      if (rtLagEl) rtLagEl.textContent = `${formatNumber(m.serverLoad?.eventLoopLagMsP95 || 0, 1)} ms`;
+      if (rtSimEl) rtSimEl.textContent = m.simulator?.running ? 'Yes' : 'No';
+
+      setIdsStatus(m.ids);
+
+      liveSeries.rps.push(Number(m.requestRate || 0));
+      clampSeries(liveSeries.rps, 60);
+      drawLiveChart();
+    }
+
+    if (msg.type === 'incidents' && Array.isArray(msg.data)) {
+      renderIncidents(msg.data);
+    }
+
+    if (msg.type === 'alert' && msg.data) {
+      const incident = msg.data;
+      incidentsCache = [incident, ...incidentsCache].slice(0, 50);
+      renderIncidents(incidentsCache);
+      showAlertPopup(incident);
+    }
+  });
+
+  ws.addEventListener('close', () => {
+    ws = null;
+    if (wsShouldReconnect) {
+      setTimeout(() => connectRealtime(), 1500);
+    }
+  });
+}
+
+function disconnectRealtime() {
+  wsShouldReconnect = false;
+  try {
+    if (ws) ws.close();
+  } catch {
+    // ignore
+  }
+  ws = null;
+}
+
 // Dashboard elements
 const todayVisitorsEl = document.getElementById("todayVisitors");
 const todayPageViewsEl = document.getElementById("todayPageViews");
@@ -22,6 +300,30 @@ const conversionRateEl = document.getElementById("conversionRate");
 const activityLogsEl = document.getElementById("activityLogs");
 const topProductsListEl = document.getElementById("topProductsList");
 const trafficChart = document.getElementById("trafficChart");
+
+// Real-time monitoring elements
+const idsDot = document.getElementById('idsDot');
+const idsStatusEl = document.getElementById('idsStatus');
+const idsSeverityEl = document.getElementById('idsSeverity');
+
+const rtUserCountEl = document.getElementById('rtUserCount');
+const rtRpsEl = document.getElementById('rtRps');
+const rtRespEl = document.getElementById('rtResp');
+const rtErrEl = document.getElementById('rtErr');
+const rtLoadEl = document.getElementById('rtLoad');
+const rtMemEl = document.getElementById('rtMem');
+const rtLagEl = document.getElementById('rtLag');
+const rtSimEl = document.getElementById('rtSim');
+
+const liveChart = document.getElementById('liveChart');
+const alertsListEl = document.getElementById('alertsList');
+const incidentLogEl = document.getElementById('incidentLog');
+
+const alertPopupEl = document.getElementById('alertPopup');
+const alertTitleEl = document.getElementById('alertTitle');
+const alertDetailsEl = document.getElementById('alertDetails');
+const alertAckBtn = document.getElementById('alertAckBtn');
+const alertDismissBtn = document.getElementById('alertDismissBtn');
 
 // Tab elements
 const tabBtns = document.querySelectorAll(".tab-btn");
@@ -32,11 +334,25 @@ const toggleAdmin = (isAdmin) => {
     loginPanel.classList.add("hidden");
     adminPanel.classList.remove("hidden");
     loadDashboardData();
+    connectRealtime();
+    refreshIncidents();
   } else {
     adminPanel.classList.add("hidden");
     loginPanel.classList.remove("hidden");
+    disconnectRealtime();
   }
 };
+
+if (alertAckBtn) {
+  alertAckBtn.addEventListener('click', () => {
+    if (!lastIncidentIdForPopup) return;
+    ackIncident(lastIncidentIdForPopup);
+  });
+}
+
+if (alertDismissBtn) {
+  alertDismissBtn.addEventListener('click', () => hideAlertPopup());
+}
 
 const formatPrice = (price) => {
   return `₹${Number(price).toFixed(2)}`;
@@ -568,13 +884,3 @@ logoutBtn.addEventListener("click", () => {
     toggleAdmin(false);
   });
 });
-
-// Check admin status on page load
-fetch("/api/admin/me")
-  .then((res) => res.json())
-  .then((data) => {
-    toggleAdmin(Boolean(data.isAdmin));
-    if (data.isAdmin) {
-      loadDashboardData();
-    }
-  });

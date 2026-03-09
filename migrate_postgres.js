@@ -116,6 +116,19 @@ async function migrate() {
       )
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ids_incidents (
+        id SERIAL PRIMARY KEY,
+        attack_type TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        affected_endpoints TEXT,
+        metrics_json TEXT,
+        status TEXT DEFAULT 'open',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+        acked_at TIMESTAMP WITH TIME ZONE
+      )
+    `);
+
     // Seed products if empty
     const res = await client.query('SELECT COUNT(*)::int as count FROM products');
     const count = res.rows[0].count;

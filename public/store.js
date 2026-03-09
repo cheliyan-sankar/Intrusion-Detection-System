@@ -26,6 +26,60 @@ const showRegister = document.getElementById("showRegister");
 const showLogin = document.getElementById("showLogin");
 const productDetails = document.getElementById("productDetails");
 
+// Real-time status strip
+const realtimeStrip = document.getElementById('realtimeStrip');
+const realtimeText = document.getElementById('realtimeText');
+
+let storeWs = null;
+let storeWsReconnect = true;
+
+function connectStoreRealtime() {
+  if (storeWs && (storeWs.readyState === 0 || storeWs.readyState === 1)) return;
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  storeWs = new WebSocket(`${proto}://${window.location.host}/ws`);
+
+  storeWs.addEventListener('open', () => {
+    try {
+      storeWs.send(JSON.stringify({ type: 'hello', module: 'ecommerce' }));
+    } catch {
+      // ignore
+    }
+  });
+
+  storeWs.addEventListener('message', (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (!msg || msg.type !== 'metrics' || !msg.data) return;
+    const m = msg.data;
+    const underAttack = Boolean(m.ids && m.ids.underAttack);
+    const threat = m.ids && m.ids.threat ? m.ids.threat : null;
+
+    const rps = Number(m.requestRate || 0);
+    const avg = Math.round(Number(m.responseTimeMs?.avg || 0));
+    const err = Math.round(Number(m.errorRate || 0));
+    const users = Number(m.userCount || 0);
+
+    if (realtimeStrip) realtimeStrip.classList.remove('hidden');
+    if (realtimeText) {
+      if (underAttack) {
+        realtimeText.textContent = `⚠️ Under potential attack (${threat?.attackType || 'Unknown'} • ${threat?.severity || 'medium'}) — Users: ${users} • ${rps.toFixed(1)} rps • Avg ${avg} ms • Errors ${err}%`;
+      } else {
+        realtimeText.textContent = `Live status — Users: ${users} • ${rps.toFixed(1)} rps • Avg ${avg} ms • Errors ${err}%`;
+      }
+    }
+  });
+
+  storeWs.addEventListener('close', () => {
+    storeWs = null;
+    if (storeWsReconnect) setTimeout(connectStoreRealtime, 2000);
+  });
+}
+
 const formatPrice = (value) => {
   const amount = Number(value);
   if (Number.isNaN(amount)) {
@@ -243,6 +297,9 @@ const checkUser = () => {
       loadCartCount();
     });
 };
+
+// Start real-time status stream
+connectStoreRealtime();
 
 const addToCart = (productId) => {
   if (!currentUser) {
