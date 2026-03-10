@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Traffic Stimulator - DemoKart</title>
+  <title>Attack Simulator - DemoKart</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -385,11 +385,15 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>🚀 Traffic Stimulator</h1>
-      <p>Simulate website traffic for testing analytics and performance</p>
+      <h1>🛡️ Attack Simulator</h1>
+      <p>Test intrusion detection systems with simulated attack patterns</p>
 
-      <!-- Mode Toggle -->
-      <div style="margin-top: 20px; text-align: center;">
+      <div style="margin-top: 16px; display: flex; justify-content: center;">
+        <button id="logoutBtn" class="btn btn-outline hidden">Logout</button>
+      </div>
+
+      <!-- Mode Toggle (hidden: this page is Attack Simulator only) -->
+      <div id="modeToggle" style="margin-top: 20px; text-align: center; display: none;">
         <div style="display: inline-flex; background: var(--bg); border-radius: 25px; padding: 4px; border: 1px solid var(--border);">
           <button id="trafficModeBtn" class="mode-btn active" style="padding: 8px 20px; border: none; border-radius: 20px; background: var(--primary); color: white; cursor: pointer; transition: all 0.3s ease;">Traffic Testing</button>
           <button id="attackModeBtn" class="mode-btn" style="padding: 8px 20px; border: none; border-radius: 20px; background: transparent; color: var(--text); cursor: pointer; transition: all 0.3s ease;">Attack Simulation</button>
@@ -433,6 +437,7 @@
           <option value="low">Low</option>
           <option value="medium">Medium</option>
           <option value="high">High</option>
+          <option value="very_high">Very High Traffic</option>
         </select>
       </div>
 
@@ -466,10 +471,9 @@
         <button id="startAttackBtn" class="btn btn-primary" style="font-size: 1.1rem; padding: 12px 30px;" disabled>🚀 Start Attack Simulation</button>
       </div>
     </div>
-    <div id="stimulatorPanel" class="stimulator-panel hidden">
+    <div id="stimulatorPanel" class="stimulator-panel hidden" style="display:none;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
         <h2 style="color: var(--primary);">Traffic Controls</h2>
-        <button id="logoutBtn" class="btn btn-outline">Logout</button>
       </div>
 
       <!-- Statistics -->
@@ -552,13 +556,13 @@
       <div style="margin-top: 30px;">
         <h3 style="margin-bottom: 15px; color: var(--primary);">Activity Log</h3>
         <div id="activityLog" class="log-area">
-          <div class="log-entry info">Traffic stimulator ready. Click a button to start generating traffic.</div>
+          <div class="log-entry info">Attack simulator ready. Select an attack type to begin.</div>
         </div>
       </div>
     </div>
 
     <div class="footer">
-      <p>DemoKart Traffic Stimulator - For testing and analytics purposes only</p>
+      <p>DemoKart Attack Simulator - For testing intrusion detection systems only</p>
     </div>
   </div>
 
@@ -733,12 +737,14 @@
     function toggleStimulator(isStimulator) {
       if (isStimulator) {
         loginPanel.classList.add("hidden");
+        if (logoutBtn) logoutBtn.classList.remove('hidden');
         // Default to Attack Simulation mode after auth
         switchMode(true);
       } else {
         stimulatorPanel.classList.add("hidden");
         attackTypesPanel.classList.add("hidden");
         attackWarning.classList.add("hidden");
+        if (logoutBtn) logoutBtn.classList.add('hidden');
         loginPanel.classList.remove("hidden");
       }
     }
@@ -780,7 +786,7 @@
 
         loginForm.reset();
         toggleStimulator(true);
-        logActivity("success", "Logged in as traffic stimulator");
+        logActivity("success", "Logged in as stimulator");
       })
       .catch(() => {
         loginError.textContent = "Login failed. Try again.";
@@ -793,7 +799,7 @@
         .then(() => {
           toggleStimulator(false);
           clearStats();
-          logActivity("info", "Logged out from traffic stimulator");
+          logActivity("info", "Logged out");
         });
     }
 
@@ -1126,6 +1132,18 @@
         selectedAttack = attackType;
         attackCards.forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
+      }
+
+      // Immediately reflect selection across storefront/admin via realtime metrics.
+      try {
+        fetch('/api/simulator/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ attackType: selectedAttack })
+        }).catch(() => {});
+      } catch {
+        // ignore
       }
 
       updateAttackButtons();

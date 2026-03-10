@@ -29,6 +29,29 @@ if (!fs.existsSync(dataDir)) {
 const DATABASE_URL = process.env.DATABASE_URL;
 const usePostgres = Boolean(DATABASE_URL);
 
+// Temporary site pause (used to stop the public storefront during simulations/incidents)
+let sitePauseUntilMs = 0;
+let sitePauseReason = '';
+
+function pauseSiteFor(ms, reason) {
+  const dur = Math.max(0, Number(ms) || 0);
+  sitePauseUntilMs = Math.max(sitePauseUntilMs, Date.now() + dur);
+  sitePauseReason = String(reason || sitePauseReason || 'Security event');
+  return { paused: true, until: new Date(sitePauseUntilMs).toISOString(), reason: sitePauseReason };
+}
+
+function clearSitePause() {
+  sitePauseUntilMs = 0;
+  sitePauseReason = '';
+  return { paused: false, until: null, reason: '' };
+}
+
+function getSitePauseState() {
+  if (!sitePauseUntilMs) return { paused: false, until: null, reason: '' };
+  if (Date.now() > sitePauseUntilMs) return clearSitePause();
+  return { paused: true, until: new Date(sitePauseUntilMs).toISOString(), reason: sitePauseReason || 'Security event' };
+}
+
 let db;
 let pool;
 
@@ -763,6 +786,59 @@ app.use((req, res, next) => {
   next();
 });
 
+// If the site is paused, stop the public storefront temporarily.
+// Admin + stimulator control-plane endpoints remain available.
+app.use((req, res, next) => {
+  const state = getSitePauseState();
+  if (!state.paused) return next();
+
+  const pathName = req.path || req.url || '/';
+  const isAdminOrStimulatorSession = Boolean(req.session && (req.session.isAdmin || req.session.isStimulator));
+  const isInternalSimulator = String(req.get('x-demokart-simulator') || '').toLowerCase() === '1';
+
+  // Always allow admin/stimulator APIs and websockets.
+  const allow =
+    isAdminOrStimulatorSession ||
+    isInternalSimulator ||
+    pathName === '/ws' ||
+    pathName === '/admin.html' ||
+    pathName === '/admin.js' ||
+    pathName === '/styles.css' ||
+    pathName === '/stimulator.html' ||
+    pathName.startsWith('/api/admin') ||
+    pathName.startsWith('/api/stimulator') ||
+    pathName.startsWith('/api/simulator');
+
+  if (allow) return next();
+
+  // Block everything else.
+  res.status(503);
+  res.setHeader('Retry-After', '30');
+
+  if (pathName.startsWith('/api/')) {
+    return res.json({ ok: false, message: 'Website temporarily stopped', pausedUntil: state.until, reason: state.reason });
+  }
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  return res.end(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Website Temporarily Stopped</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div style="max-width: 820px; margin: 48px auto; padding: 24px;">
+    <h1 style="margin: 0 0 12px;">Website temporarily stopped</h1>
+    <p style="margin: 0 0 8px;">Access is paused due to a security event.</p>
+    <p style="margin: 0 0 8px;"><strong>Reason:</strong> ${String(state.reason || 'Security event').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+    <p style="margin: 0;">Try again after: <strong>${String(state.until || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</strong></p>
+  </div>
+</body>
+</html>`);
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 
 // Route for stimulator page
@@ -1338,6 +1414,17 @@ app.get('/api/simulator/status', requireStimulator, (req, res) => {
   return res.json({ ok: true, status: simulator.status() });
 });
 
+// Selecting an attack (without starting) should still reflect in realtime dashboards.
+app.post('/api/simulator/select', requireStimulator, (req, res) => {
+  try {
+    const { attackType } = req.body || {};
+    const result = simulator.select(attackType);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
 app.post('/api/simulator/start', requireStimulator, async (req, res) => {
   try {
     const { attackType, intensity } = req.body || {};
@@ -1355,6 +1442,66 @@ app.post('/api/simulator/start', requireStimulator, async (req, res) => {
 
     const result = await simulator.start({ attackType: mapped, intensity });
     if (!result.ok) return res.status(400).json(result);
+
+    // Immediately raise an alert/incident so the admin panel can popup without
+    // waiting for traffic thresholds to be detected.
+    try {
+      const sev = String(intensity || 'medium').toLowerCase() === 'high'
+        ? 'high'
+        : String(intensity || 'medium').toLowerCase() === 'low'
+          ? 'low'
+          : 'medium';
+
+      const t = String(result.attackType || mapped || '').toLowerCase();
+      const label = t === 'ddos' ? 'DDoS'
+        : t === 'bot_traffic' ? 'Bot Traffic'
+        : t === 'brute_force' ? 'Brute Force'
+        : t === 'spike_load' ? 'Spike Load'
+        : (t || 'Unknown');
+
+      const affected = t === 'ddos' ? ['GET /', 'GET /api/products', 'GET /api/categories']
+        : t === 'bot_traffic' ? ['GET /api/products', 'GET /api/categories', 'GET /api/products/:id']
+        : t === 'brute_force' ? ['POST /api/user/login']
+        : t === 'spike_load' ? ['GET /', 'GET /api/products', 'GET /api/categories']
+        : [];
+
+      const insertSql = usePostgres
+        ? "INSERT INTO ids_incidents (attack_type, severity, affected_endpoints, metrics_json, status, created_at) VALUES (?, ?, ?, ?, 'open', CURRENT_TIMESTAMP) RETURNING id"
+        : "INSERT INTO ids_incidents (attack_type, severity, affected_endpoints, metrics_json, status, created_at) VALUES (?, ?, ?, ?, 'open', CURRENT_TIMESTAMP)";
+
+      const incidentId = await new Promise((resolve) => {
+        db.run(
+          insertSql,
+          [label, sev, JSON.stringify(affected), JSON.stringify({ source: 'simulator', intensity: result.intensity })],
+          function onDone(err) {
+            if (err) return resolve(null);
+            return resolve(this && this.lastID ? this.lastID : null);
+          }
+        );
+      });
+
+      const incident = {
+        id: incidentId,
+        attackType: label,
+        severity: sev,
+        timestamp: new Date().toISOString(),
+        affectedEndpoints: affected,
+        status: 'open',
+        ackedAt: null,
+        metrics: {},
+        sitePaused: true,
+        sitePausedUntil: null
+      };
+
+      // Pause public storefront temporarily (admin + stimulator remain accessible)
+      const pauseState = pauseSiteFor(2 * 60 * 1000, `Attack simulation started: ${label}`);
+      incident.sitePausedUntil = pauseState.until;
+
+      broadcast({ type: 'alert', data: incident });
+    } catch {
+      // Best-effort: even if incident insert fails, the simulator can still run.
+    }
+
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, message: 'Server error' });
@@ -1364,6 +1511,8 @@ app.post('/api/simulator/start', requireStimulator, async (req, res) => {
 app.post('/api/simulator/stop', requireStimulator, async (req, res) => {
   try {
     const result = await simulator.stop();
+    // Resume storefront when simulator stops.
+    clearSitePause();
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, message: 'Server error' });

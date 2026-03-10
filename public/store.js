@@ -33,6 +33,16 @@ const realtimeText = document.getElementById('realtimeText');
 let storeWs = null;
 let storeWsReconnect = true;
 
+function formatAttackLabel(code) {
+  const c = String(code || '').toLowerCase();
+  if (!c) return '';
+  if (c === 'ddos') return 'DDoS';
+  if (c === 'bot_traffic') return 'Bot Traffic';
+  if (c === 'brute_force') return 'Brute Force';
+  if (c === 'spike_load') return 'Spike Load';
+  return c.replace(/_/g, ' ').replace(/\b\w/g, m => m.toUpperCase());
+}
+
 function connectStoreRealtime() {
   if (storeWs && (storeWs.readyState === 0 || storeWs.readyState === 1)) return;
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -58,16 +68,27 @@ function connectStoreRealtime() {
     const m = msg.data;
     const underAttack = Boolean(m.ids && m.ids.underAttack);
     const threat = m.ids && m.ids.threat ? m.ids.threat : null;
+    const selectedAttack = m.simulator && m.simulator.selectedAttackType ? m.simulator.selectedAttackType : null;
 
     const rps = Number(m.requestRate || 0);
     const avg = Math.round(Number(m.responseTimeMs?.avg || 0));
     const err = Math.round(Number(m.errorRate || 0));
     const users = Number(m.userCount || 0);
+    const simUsers = Number(m.simulator?.concurrency || 0);
+    const simVirtualUsers = Number(m.simulator?.virtualUsers || 0);
 
     if (realtimeStrip) realtimeStrip.classList.remove('hidden');
     if (realtimeText) {
       if (underAttack) {
-        realtimeText.textContent = `⚠️ Under potential attack (${threat?.attackType || 'Unknown'} • ${threat?.severity || 'medium'}) — Users: ${users} • ${rps.toFixed(1)} rps • Avg ${avg} ms • Errors ${err}%`;
+        const shownUsers = m.simulator?.running
+          ? (simVirtualUsers > 0 ? simVirtualUsers : (simUsers > 0 ? simUsers : users))
+          : users;
+        realtimeText.textContent = `⚠️ Under potential attack (${threat?.attackType || 'Unknown'} • ${threat?.severity || 'medium'}) — Users: ${shownUsers} • ${rps.toFixed(1)} rps • Avg ${avg} ms • Errors ${err}%`;
+      } else if (selectedAttack) {
+        const shownUsers = m.simulator?.running
+          ? (simVirtualUsers > 0 ? simVirtualUsers : (simUsers > 0 ? simUsers : users))
+          : users;
+        realtimeText.textContent = `Attack simulator selected: ${formatAttackLabel(selectedAttack)} — Users: ${shownUsers} • ${rps.toFixed(1)} rps • Avg ${avg} ms • Errors ${err}%`;
       } else {
         realtimeText.textContent = `Live status — Users: ${users} • ${rps.toFixed(1)} rps • Avg ${avg} ms • Errors ${err}%`;
       }

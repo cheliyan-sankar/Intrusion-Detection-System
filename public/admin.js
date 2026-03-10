@@ -189,7 +189,10 @@ function showAlertPopup(incident) {
   lastIncidentIdForPopup = incident?.id || null;
   const endpoints = (incident?.affectedEndpoints || []).join(' | ');
   alertTitleEl.textContent = `Potential Attack Detected: ${incident.attackType} (${incident.severity})`;
-  alertDetailsEl.textContent = `${incident.timestamp} • Affected: ${endpoints || '—'}`;
+  const pauseNote = incident?.sitePaused
+    ? ` • Website paused temporarily${incident?.sitePausedUntil ? ` (until ${incident.sitePausedUntil})` : ''}`
+    : '';
+  alertDetailsEl.textContent = `${incident.timestamp} • Affected: ${endpoints || '—'}${pauseNote}`;
   alertPopupEl.classList.remove('hidden');
 }
 
@@ -253,7 +256,20 @@ function connectRealtime() {
       if (rtLoadEl) rtLoadEl.textContent = formatNumber(m.serverLoad?.load1 || 0, 2);
       if (rtMemEl) rtMemEl.textContent = `${formatNumber(m.serverLoad?.memRssMb || 0, 1)} MB`;
       if (rtLagEl) rtLagEl.textContent = `${formatNumber(m.serverLoad?.eventLoopLagMsP95 || 0, 1)} ms`;
-      if (rtSimEl) rtSimEl.textContent = m.simulator?.running ? 'Yes' : 'No';
+      if (rtSimEl) {
+        const sel = m.simulator?.selectedAttackType;
+        const label = sel
+          ? (sel === 'ddos' ? 'DDoS'
+            : sel === 'bot_traffic' ? 'Bot Traffic'
+            : sel === 'brute_force' ? 'Brute Force'
+            : sel === 'spike_load' ? 'Spike Load'
+            : String(sel))
+          : '';
+
+        rtSimEl.textContent = m.simulator?.running
+          ? (label ? `Yes (${label})` : 'Yes')
+          : (label ? `Selected (${label})` : 'No');
+      }
 
       setIdsStatus(m.ids);
 
@@ -359,19 +375,9 @@ const formatPrice = (price) => {
 };
 
 const renderStars = (rating) => {
-  const fullStars = Math.floor(rating);
-  const hasHalfStar = rating % 1 >= 0.5;
-  let stars = '';
-  for (let i = 0; i < fullStars; i++) {
-    stars += '★';
-  }
-  if (hasHalfStar) {
-    stars += '☆';
-  }
-  for (let i = fullStars + (hasHalfStar ? 1 : 0); i < 5; i++) {
-    stars += '☆';
-  }
-  return stars;
+  const n = Number(rating);
+  if (Number.isNaN(n)) return '0.0/5';
+  return `${Math.max(0, Math.min(5, n)).toFixed(1)}/5`;
 };
 
 // Tab switching functionality
@@ -440,7 +446,6 @@ const loadActivityLogs = () => {
         logItem.className = `log-item ${log.type}`;
         logItem.innerHTML = `
           <span class="log-time">${log.time}</span>
-          <span class="log-icon">${log.icon}</span>
           <span class="log-message">${log.message}</span>
         `;
         activityLogsEl.appendChild(logItem);
@@ -449,14 +454,14 @@ const loadActivityLogs = () => {
     .catch(() => {
       // Fallback to mock data if API fails
       const mockLogs = [
-        { time: "14:32", type: "success", icon: "👤", message: "User 'john_doe' logged in successfully" },
-        { time: "14:28", type: "info", icon: "🛒", message: "Product 'Wireless Headphones' added to cart" },
-        { time: "14:25", type: "warning", icon: "⚠️", message: "Failed login attempt for user 'admin'" },
-        { time: "14:20", type: "success", icon: "✅", message: "New product 'Smart Watch' added to catalog" },
-        { time: "14:15", type: "info", icon: "👁️", message: "Product page viewed: 'Laptop Stand'" },
-        { time: "14:10", type: "success", icon: "💳", message: "Order #1234 completed successfully" },
-        { time: "14:05", type: "error", icon: "❌", message: "Payment failed for order #1233" },
-        { time: "14:00", type: "info", icon: "🔍", message: "Search performed: 'wireless mouse'" }
+        { time: "14:32", type: "success", message: "User 'john_doe' logged in successfully" },
+        { time: "14:28", type: "info", message: "Product 'Wireless Headphones' added to cart" },
+        { time: "14:25", type: "warning", message: "Failed login attempt for user 'admin'" },
+        { time: "14:20", type: "success", message: "New product 'Smart Watch' added to catalog" },
+        { time: "14:15", type: "info", message: "Product page viewed: 'Laptop Stand'" },
+        { time: "14:10", type: "success", message: "Order #1234 completed successfully" },
+        { time: "14:05", type: "error", message: "Payment failed for order #1233" },
+        { time: "14:00", type: "info", message: "Search performed: 'wireless mouse'" }
       ];
 
       activityLogsEl.innerHTML = "";
@@ -465,7 +470,6 @@ const loadActivityLogs = () => {
         logItem.className = `log-item ${log.type}`;
         logItem.innerHTML = `
           <span class="log-time">${log.time}</span>
-          <span class="log-icon">${log.icon}</span>
           <span class="log-message">${log.message}</span>
         `;
         activityLogsEl.appendChild(logItem);
@@ -754,12 +758,8 @@ const loadProducts = () => {
           </td>
           <td>
             <div class="action-buttons">
-              <button class="btn-icon btn-edit edit-btn" title="Edit Product">
-                ✏️
-              </button>
-              <button class="btn-icon btn-delete delete-btn" title="Delete Product">
-                🗑️
-              </button>
+              <button class="btn-icon btn-edit edit-btn" title="Edit Product">Edit</button>
+              <button class="btn-icon btn-delete delete-btn" title="Delete Product">Delete</button>
             </div>
           </td>
         `;

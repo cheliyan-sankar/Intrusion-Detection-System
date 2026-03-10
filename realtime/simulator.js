@@ -10,13 +10,18 @@ function sleep(ms) {
 
 function intensityToConfig(intensity) {
   const lvl = String(intensity || 'low').toLowerCase();
+  if (lvl === 'very_high' || lvl === 'very high' || lvl === 'veryhigh') {
+    // Represent "lakhs" of users via virtualUsers, while keeping actual
+    // request fan-out bounded so a single dev container doesn't melt.
+    return { name: 'very_high', rps: 2000, concurrency: 200, durationMs: 0, virtualUsers: 100000 };
+  }
   if (lvl === 'high') {
-    return { name: 'high', rps: 250, concurrency: 30, durationMs: 0 };
+    return { name: 'high', rps: 250, concurrency: 30, durationMs: 0, virtualUsers: 30000 };
   }
   if (lvl === 'medium') {
-    return { name: 'medium', rps: 120, concurrency: 15, durationMs: 0 };
+    return { name: 'medium', rps: 120, concurrency: 15, durationMs: 0, virtualUsers: 12000 };
   }
-  return { name: 'low', rps: 45, concurrency: 8, durationMs: 0 };
+  return { name: 'low', rps: 45, concurrency: 8, durationMs: 0, virtualUsers: 3000 };
 }
 
 function dbRun(db, sql, params = []) {
@@ -28,8 +33,27 @@ function dbRun(db, sql, params = []) {
   });
 }
 
+function normalizeAttackType(value) {
+  const normalized = String(value || '').toLowerCase().trim();
+  const mapped = normalized === 'bot' ? 'bot_traffic'
+    : normalized === 'bot_traffic' ? 'bot_traffic'
+    : normalized === 'bruteforce' ? 'brute_force'
+    : normalized === 'brute' ? 'brute_force'
+    : normalized === 'brute_force' ? 'brute_force'
+    : normalized === 'spike' ? 'spike_load'
+    : normalized === 'spike_load' ? 'spike_load'
+    : normalized === 'ddos' ? 'ddos'
+    : '';
+
+  const allowed = new Set(['ddos', 'bot_traffic', 'brute_force', 'spike_load']);
+  return allowed.has(mapped) ? mapped : '';
+}
+
 function createAttackSimulator({ db, baseUrl }) {
   let current = null; // { id, attackType, intensity, startedAt, controller, stopRequested }
+  let selected = null; // { attackType, selectedAt }
+
+  const internalHeaders = { 'x-demokart-simulator': '1' };
 
   async function logAttack(attackType, details, severity) {
     try {
@@ -44,14 +68,34 @@ function createAttackSimulator({ db, baseUrl }) {
   }
 
   function status() {
-    if (!current) return { running: false };
+    const base = !current
+      ? { running: false }
+      : {
+          running: true,
+          id: current.id,
+          attackType: current.attackType,
+          intensity: current.intensity,
+          concurrency: current.concurrency,
+          virtualUsers: current.virtualUsers,
+          startedAt: current.startedAt
+        };
+
     return {
-      running: true,
-      id: current.id,
-      attackType: current.attackType,
-      intensity: current.intensity,
-      startedAt: current.startedAt
+      ...base,
+      selectedAttackType: selected ? selected.attackType : null,
+      selectedAt: selected ? selected.selectedAt : null
     };
+  }
+
+  function select(attackType) {
+    const t = normalizeAttackType(attackType);
+    if (!t) {
+      selected = null;
+      return { ok: true, selectedAttackType: null, selectedAt: null };
+    }
+
+    selected = { attackType: t, selectedAt: new Date().toISOString() };
+    return { ok: true, selectedAttackType: selected.attackType, selectedAt: selected.selectedAt };
   }
 
   async function stop() {
@@ -69,9 +113,8 @@ function createAttackSimulator({ db, baseUrl }) {
   }
 
   async function start({ attackType, intensity }) {
-    const type = String(attackType || '').toLowerCase();
-    const allowed = new Set(['ddos', 'bot_traffic', 'brute_force', 'spike_load']);
-    if (!allowed.has(type)) {
+    const type = normalizeAttackType(attackType);
+    if (!type) {
       return { ok: false, message: 'Invalid attackType' };
     }
 
@@ -85,15 +128,27 @@ function createAttackSimulator({ db, baseUrl }) {
     if (type === 'spike_load') {
       cfg.durationMs = cfg.name === 'high' ? 12000 : cfg.name === 'medium' ? 9000 : 6000;
       cfg.rps = cfg.name === 'high' ? 600 : cfg.name === 'medium' ? 350 : 160;
-      cfg.concurrency = cfg.name === 'high' ? 60 : cfg.name === 'medium' ? 35 : 20;
+      if (cfg.name === 'very_high') {
+        cfg.durationMs = 15000;
+        cfg.rps = 3500;
+        cfg.concurrency = 260;
+      } else {
+        cfg.concurrency = cfg.name === 'high' ? 60 : cfg.name === 'medium' ? 35 : 20;
+      }
     }
 
     const controller = new AbortController();
     const id = `job_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+    // Keep selection in sync with explicit starts.
+    selected = { attackType: type, selectedAt: new Date().toISOString() };
+
     current = {
       id,
       attackType: type,
       intensity: cfg.name,
+      concurrency: cfg.concurrency,
+      virtualUsers: cfg.virtualUsers,
       startedAt: new Date().toISOString(),
       controller,
       stopRequested: false
@@ -121,7 +176,7 @@ function createAttackSimulator({ db, baseUrl }) {
       if (type === 'ddos') {
         const endpoints = ['/', '/api/products', '/api/categories'];
         const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-        await fetch(baseUrl + ep, { method: 'GET', signal: controller.signal }).catch(() => {});
+        await fetch(baseUrl + ep, { method: 'GET', headers: internalHeaders, signal: controller.signal }).catch(() => {});
         return;
       }
 
@@ -135,7 +190,7 @@ function createAttackSimulator({ db, baseUrl }) {
           `/api/products/${id}`
         ];
         const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-        await fetch(baseUrl + ep, { method: 'GET', signal: controller.signal }).catch(() => {});
+        await fetch(baseUrl + ep, { method: 'GET', headers: internalHeaders, signal: controller.signal }).catch(() => {});
         return;
       }
 
@@ -148,7 +203,7 @@ function createAttackSimulator({ db, baseUrl }) {
         };
         await fetch(baseUrl + '/api/user/login', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...internalHeaders },
           body: JSON.stringify(body),
           signal: controller.signal
         }).catch(() => {});
@@ -159,7 +214,7 @@ function createAttackSimulator({ db, baseUrl }) {
         // Burst across key endpoints
         const endpoints = ['/', '/api/products', '/api/categories', '/api/products/1'];
         const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-        await fetch(baseUrl + ep, { method: 'GET', signal: controller.signal }).catch(() => {});
+        await fetch(baseUrl + ep, { method: 'GET', headers: internalHeaders, signal: controller.signal }).catch(() => {});
       }
     }
 
@@ -200,7 +255,8 @@ function createAttackSimulator({ db, baseUrl }) {
   return {
     start,
     stop,
-    status
+    status,
+    select
   };
 }
 
