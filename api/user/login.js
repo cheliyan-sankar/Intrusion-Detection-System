@@ -3,8 +3,27 @@ const path = require('path');
 
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
+const ADMIN_USER_2 = process.env.ADMIN_USER_2 || 'admin1';
+const ADMIN_PASS_2 = process.env.ADMIN_PASS_2 || 'hari123';
+
 const STIMULATOR_USER = process.env.STIMULATOR_USER || 'stimulator';
 const STIMULATOR_PASS = process.env.STIMULATOR_PASS || 'stimulate2024';
+const STIMULATOR_USER_2 = process.env.STIMULATOR_USER_2 || 'simulator';
+const STIMULATOR_PASS_2 = process.env.STIMULATOR_PASS_2 || '1234hari';
+
+const ADMIN_CREDENTIALS = [
+  { username: ADMIN_USER, password: ADMIN_PASS },
+  { username: ADMIN_USER_2, password: ADMIN_PASS_2 }
+].filter(c => c.username && c.password);
+
+const STIMULATOR_CREDENTIALS = [
+  { username: STIMULATOR_USER, password: STIMULATOR_PASS },
+  { username: STIMULATOR_USER_2, password: STIMULATOR_PASS_2 }
+].filter(c => c.username && c.password);
+
+const matchesCredentials = (list, username, password) => {
+  return Array.isArray(list) && list.some(c => c.username === username && c.password === password);
+};
 
 const loadUsers = () => {
   try {
@@ -22,14 +41,14 @@ module.exports = async (req, res) => {
     if (!username || !password) return res.status(400).json({ ok: false, message: 'Missing credentials' });
 
     // admin
-    if (username === ADMIN_USER && password === ADMIN_PASS) {
+    if (matchesCredentials(ADMIN_CREDENTIALS, username, password)) {
       const payload = { username, isAdmin: true };
       res.setHeader('Set-Cookie', `demokart_user=${encodeURIComponent(JSON.stringify(payload))}; Path=/; HttpOnly; SameSite=Lax`);
       return res.json({ ok: true, isAdmin: true, redirect: '/admin.html' });
     }
 
     // stimulator
-    if (username === STIMULATOR_USER && password === STIMULATOR_PASS) {
+    if (matchesCredentials(STIMULATOR_CREDENTIALS, username, password)) {
       const payload = { username, isStimulator: true };
       res.setHeader('Set-Cookie', `demokart_user=${encodeURIComponent(JSON.stringify(payload))}; Path=/; HttpOnly; SameSite=Lax`);
       return res.json({ ok: true, isStimulator: true, redirect: '/stimulator.html' });

@@ -3,6 +3,7 @@ const fs = require("fs");
 const http = require('http');
 const express = require("express");
 const session = require("express-session");
+const cookieParser = require('cookie-parser');
 const sqlite3 = require("sqlite3").verbose();
 const { Pool } = require('pg');
 const bcrypt = require("bcrypt");
@@ -15,11 +16,37 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Vercel runs behind a proxy (x-forwarded-*)
+if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "admin123";
+// Optional secondary admin credentials (for demos/training)
+const ADMIN_USER_2 = process.env.ADMIN_USER_2 || "admin1";
+const ADMIN_PASS_2 = process.env.ADMIN_PASS_2 || "hari123";
+
 const STIMULATOR_USER = process.env.STIMULATOR_USER || "stimulator";
 const STIMULATOR_PASS = process.env.STIMULATOR_PASS || "stimulate2024";
+// Optional secondary stimulator/simulator credentials (for demos/training)
+const STIMULATOR_USER_2 = process.env.STIMULATOR_USER_2 || "simulator";
+const STIMULATOR_PASS_2 = process.env.STIMULATOR_PASS_2 || "1234hari";
 const SESSION_SECRET = process.env.SESSION_SECRET || "demokart-dev-secret";
+
+const ADMIN_CREDENTIALS = [
+  { username: ADMIN_USER, password: ADMIN_PASS },
+  { username: ADMIN_USER_2, password: ADMIN_PASS_2 }
+].filter(c => c.username && c.password);
+
+const STIMULATOR_CREDENTIALS = [
+  { username: STIMULATOR_USER, password: STIMULATOR_PASS },
+  { username: STIMULATOR_USER_2, password: STIMULATOR_PASS_2 }
+].filter(c => c.username && c.password);
+
+function matchesCredentials(list, username, password) {
+  return Array.isArray(list) && list.some(c => c.username === username && c.password === password);
+}
 
 const dataDir = path.join(__dirname, "data");
 if (!fs.existsSync(dataDir)) {
@@ -734,11 +761,56 @@ db.get("SELECT COUNT(*) as count FROM products", (err, row) => {
 });
 
 app.use(express.json());
+app.use(cookieParser(SESSION_SECRET));
+
+const ROLE_COOKIE_NAME = 'demokart_role';
+
+function setRoleCookie(res, payload) {
+  // Signed cookie so the role cannot be forged client-side.
+  // Note: SESSION_SECRET should be set in Vercel env vars.
+  res.cookie(ROLE_COOKIE_NAME, JSON.stringify(payload), {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: 'auto',
+    signed: true,
+    path: '/'
+  });
+}
+
+function clearRoleCookie(res) {
+  res.clearCookie(ROLE_COOKIE_NAME, { path: '/' });
+}
+
+function getRoleCookie(req) {
+  const raw = req.signedCookies ? req.signedCookies[ROLE_COOKIE_NAME] : null;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isAdminRequest(req) {
+  if (req.session && req.session.isAdmin) return true;
+  const role = getRoleCookie(req);
+  return Boolean(role && role.isAdmin);
+}
+
+function isStimulatorRequest(req) {
+  if (req.session && req.session.isStimulator) return true;
+  const role = getRoleCookie(req);
+  return Boolean(role && role.isStimulator);
+}
+
 const sessionMiddleware = session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax' }
+  proxy: Boolean(process.env.VERCEL),
+  cookie: { httpOnly: true, sameSite: 'lax', secure: 'auto' }
 });
 app.use(sessionMiddleware);
 
@@ -855,7 +927,7 @@ const logActivity = (userId, sessionId, action, details, ipAddress) => {
 };
 
 const requireAdmin = (req, res, next) => {
-  if (req.session && req.session.isAdmin) {
+  if (isAdminRequest(req)) {
     return next();
   }
 
@@ -863,7 +935,7 @@ const requireAdmin = (req, res, next) => {
 };
 
 const requireStimulator = (req, res, next) => {
-  if (req.session && req.session.isStimulator) {
+  if (isStimulatorRequest(req)) {
     return next();
   }
 
@@ -1090,7 +1162,7 @@ app.delete("/api/wishlist/:wishlistId", (req, res) => {
 });
 
 app.get("/api/admin/me", (req, res) => {
-  return res.json({ ok: true, isAdmin: Boolean(req.session && req.session.isAdmin) });
+  return res.json({ ok: true, isAdmin: isAdminRequest(req) });
 });
 
 app.post("/api/admin/login", (req, res) => {
@@ -1100,17 +1172,20 @@ app.post("/api/admin/login", (req, res) => {
     return res.status(400).json({ ok: false, message: "Missing credentials" });
   }
 
-  if (username !== ADMIN_USER || password !== ADMIN_PASS) {
+  if (!matchesCredentials(ADMIN_CREDENTIALS, username, password)) {
     logActivity(null, req.session.id, 'admin_login_failed', `Failed login attempt for username: ${username}`, req.ip);
     return res.status(401).json({ ok: false, message: "Invalid credentials" });
   }
 
   req.session.isAdmin = true;
+  req.session.username = username;
+  setRoleCookie(res, { username, isAdmin: true });
   logActivity(null, req.session.id, 'admin_login_success', `Admin login successful for username: ${username}`, req.ip);
   return res.json({ ok: true });
 });
 
 app.post("/api/admin/logout", (req, res) => {
+  clearRoleCookie(res);
   req.session.destroy(() => {
     res.json({ ok: true });
   });
@@ -1156,17 +1231,19 @@ app.post("/api/user/login", (req, res) => {
   }
 
   // Check if admin credentials
-  if (username === ADMIN_USER && password === ADMIN_PASS) {
+  if (matchesCredentials(ADMIN_CREDENTIALS, username, password)) {
     req.session.isAdmin = true;
     req.session.username = username;
+    setRoleCookie(res, { username, isAdmin: true });
     logActivity(null, req.session.id, 'admin_login_success', `Admin login successful for username: ${username}`, req.ip);
     return res.json({ ok: true, isAdmin: true, redirect: "/admin.html" });
   }
 
   // Check if stimulator credentials
-  if (username === STIMULATOR_USER && password === STIMULATOR_PASS) {
+  if (matchesCredentials(STIMULATOR_CREDENTIALS, username, password)) {
     req.session.isStimulator = true;
     req.session.username = username;
+    setRoleCookie(res, { username, isStimulator: true });
     logActivity(null, req.session.id, 'stimulator_login_success', `Stimulator login successful for username: ${username}`, req.ip);
     return res.json({ ok: true, isStimulator: true, redirect: "/stimulator.html" });
   }
@@ -1190,6 +1267,7 @@ app.post("/api/user/login", (req, res) => {
 });
 
 app.post("/api/user/logout", (req, res) => {
+  clearRoleCookie(res);
   req.session.destroy(() => {
     res.json({ ok: true });
   });
@@ -1527,9 +1605,10 @@ app.post("/api/stimulator/login", (req, res) => {
     return res.status(400).json({ ok: false, message: "Missing credentials" });
   }
 
-  if (username === STIMULATOR_USER && password === STIMULATOR_PASS) {
+  if (matchesCredentials(STIMULATOR_CREDENTIALS, username, password)) {
     req.session.isStimulator = true;
     req.session.username = username;
+    setRoleCookie(res, { username, isStimulator: true });
     logActivity(null, req.session.id, 'stimulator_login_success', `Stimulator login successful for username: ${username}`, req.ip);
     return res.json({ ok: true, isStimulator: true });
   }
@@ -1539,14 +1618,17 @@ app.post("/api/stimulator/login", (req, res) => {
 });
 
 app.post("/api/stimulator/logout", (req, res) => {
+  clearRoleCookie(res);
   req.session.destroy(() => {
     res.json({ ok: true });
   });
 });
 
 app.get("/api/stimulator/me", (req, res) => {
-  if (req.session.isStimulator) {
-    return res.json({ ok: true, isStimulator: true, username: req.session.username });
+  if (isStimulatorRequest(req)) {
+    const role = getRoleCookie(req);
+    const username = (req.session && req.session.username) || (role && role.username) || null;
+    return res.json({ ok: true, isStimulator: true, username });
   }
   return res.json({ ok: false });
 });
