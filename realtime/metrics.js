@@ -79,7 +79,7 @@ function createMetrics(options = {}) {
     const method = req.method || 'GET';
     const path = normalizePath(req.path || req.url || '/');
     const routeKey = `${method.toUpperCase()} ${path}`;
-    const ip = req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
+    const ip = req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
 
     res.on('finish', () => {
       const end = process.hrtime.bigint();

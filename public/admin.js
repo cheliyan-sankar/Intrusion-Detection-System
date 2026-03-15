@@ -253,41 +253,23 @@ function connectRealtime() {
       if (rtRpsEl) rtRpsEl.textContent = `${formatNumber(m.requestRate, 1)} rps`;
       if (rtRespEl) rtRespEl.textContent = `${Math.round(m.responseTimeMs?.avg || 0)} ms`;
       if (rtErrEl) rtErrEl.textContent = formatPct(m.errorRate);
-      if (rtLoadEl) rtLoadEl.textContent = formatNumber(m.serverLoad?.load1 || 0, 2);
-      if (rtMemEl) rtMemEl.textContent = `${formatNumber(m.serverLoad?.memRssMb || 0, 1)} MB`;
-      if (rtLagEl) rtLagEl.textContent = `${formatNumber(m.serverLoad?.eventLoopLagMsP95 || 0, 1)} ms`;
-      if (rtSimEl) {
-        const sel = m.simulator?.selectedAttackType;
-        const label = sel
-          ? (sel === 'ddos' ? 'DDoS'
-            : sel === 'bot_traffic' ? 'Bot Traffic'
-            : sel === 'brute_force' ? 'Brute Force'
-            : sel === 'spike_load' ? 'Spike Load'
-            : String(sel))
-          : '';
 
-        rtSimEl.textContent = m.simulator?.running
-          ? (label ? `Yes (${label})` : 'Yes')
-          : (label ? `Selected (${label})` : 'No');
+      // Display attack details
+      const attackDetailsEl = document.getElementById('attackDetails');
+      if (attackDetailsEl && m.attackDetails) {
+        const { selectedAttackType, intensity, running } = m.attackDetails;
+        attackDetailsEl.textContent = running
+          ? `Attack: ${selectedAttackType} (Intensity: ${intensity})`
+          : 'No active attack';
       }
-
-      setIdsStatus(m.ids);
-
-      liveSeries.rps.push(Number(m.requestRate || 0));
-      clampSeries(liveSeries.rps, 60);
-      drawLiveChart();
     }
 
-    if (msg.type === 'incidents' && Array.isArray(msg.data)) {
-      renderIncidents(msg.data);
-    }
-
+    // Show alert for high-intensity attacks
     if (msg.type === 'alert' && msg.data) {
-      const incident = msg.data;
-      incidentsCache = [incident, ...incidentsCache].slice(0, 50);
-      renderIncidents(incidentsCache);
-      showAlertPopup(incident);
+      alert(msg.data.message);
     }
+
+    console.log('WebSocket message received:', msg);
   });
 
   ws.addEventListener('close', () => {
@@ -882,5 +864,36 @@ productForm.addEventListener("submit", (event) => {
 logoutBtn.addEventListener("click", () => {
   fetch("/api/admin/logout", { method: "POST" }).then(() => {
     toggleAdmin(false);
+  });
+});
+
+// Function to handle attack selection from the simulator panel
+function selectAttack(attackType) {
+  fetch('/api/simulator/select', { // Updated API endpoint
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ attackType }),
+  })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error('Failed to select attack');
+      }
+      return response.json();
+    })
+    .then((data) => {
+      console.log('Attack selected:', data);
+    })
+    .catch((error) => {
+      console.error('Error selecting attack:', error);
+    });
+}
+
+// Example: Add event listener to simulator panel buttons
+document.querySelectorAll('.attack-select-button').forEach((button) => {
+  button.addEventListener('click', () => {
+    const attackType = button.dataset.attackType;
+    selectAttack(attackType);
   });
 });

@@ -173,10 +173,26 @@ function createAttackSimulator({ db, baseUrl }) {
     async function oneRequest() {
       if (controller.signal.aborted) return;
 
+      // Generate unique IPs based on intensity
+      let userCount;
+      if (cfg.name === 'low') userCount = 10;
+      else if (cfg.name === 'medium') userCount = 15;
+      else if (cfg.name === 'high') userCount = 25;
+      else userCount = 5; // Default for other intensities
+
+      const randomIp = `192.168.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * userCount)}`;
+
       if (type === 'ddos') {
         const endpoints = ['/', '/api/products', '/api/categories'];
         const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-        await fetch(baseUrl + ep, { method: 'GET', headers: internalHeaders, signal: controller.signal }).catch(() => {});
+        await fetch(baseUrl + ep, {
+          method: 'GET',
+          headers: {
+            ...internalHeaders,
+            'X-Forwarded-For': randomIp
+          },
+          signal: controller.signal
+        }).catch(() => {});
         return;
       }
 

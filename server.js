@@ -1497,6 +1497,7 @@ app.post('/api/simulator/select', requireStimulator, (req, res) => {
   try {
     const { attackType } = req.body || {};
     const result = simulator.select(attackType);
+    console.log('Simulator API: Attack selected:', attackType);
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, message: 'Server error' });
@@ -1819,10 +1820,21 @@ setInterval(async () => {
     snap.ids = status;
     snap.simulator = simulator.status();
 
-    broadcast({ type: 'metrics', data: snap });
-    if (incident) {
-      broadcast({ type: 'alert', data: incident });
+    // Include attack-related details in the broadcast payload
+    const attackDetails = {
+      selectedAttackType: snap.simulator.selectedAttackType,
+      selectedAt: snap.simulator.selectedAt,
+      running: snap.simulator.running,
+      attackType: snap.simulator.attackType,
+      intensity: snap.simulator.intensity
+    };
+
+    // Trigger alert for high-intensity attacks
+    if (snap.simulator.intensity === 'high') {
+      broadcast({ type: 'alert', data: { message: 'High-intensity attack detected!' } });
     }
+
+    broadcast({ type: 'metrics', data: { ...snap, attackDetails } });
   } catch (err) {
     // Keep the loop alive even if something transient fails.
   }
