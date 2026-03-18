@@ -19,6 +19,27 @@ let ws = null;
 let wsShouldReconnect = false;
 let lastIncidentIdForPopup = null;
 let incidentsCache = [];
+let lastIncidentsRefreshAtMs = 0;
+
+let lastRealtimeUserCount = null;
+let lastRealtimeSimRunning = false;
+
+function wsDebugEnabled() {
+  try {
+    return String(localStorage.getItem('debugWs') || '') === '1';
+  } catch {
+    return false;
+  }
+}
+
+let lastWsDebugLogAtMs = 0;
+function wsDebugLog(...args) {
+  if (!wsDebugEnabled()) return;
+  const now = Date.now();
+  if (now - lastWsDebugLogAtMs < 1000) return; // throttle
+  lastWsDebugLogAtMs = now;
+  console.log('[admin/ws]', ...args);
+}
 
 const liveSeries = {
   rps: []
@@ -249,27 +270,113 @@ function connectRealtime() {
 
     if (msg.type === 'metrics' && msg.data) {
       const m = msg.data;
-      if (rtUserCountEl) rtUserCountEl.textContent = String(m.userCount ?? 0);
+      const runningSim = Boolean(m.simulator && m.simulator.running);
+      const simVirtualUsers = Number(m.simulator?.virtualUsers || 0);
+      const simConcurrency = Number(m.simulator?.concurrency || 0);
+      const shownUsers = runningSim
+        ? (simVirtualUsers > 0 ? simVirtualUsers : (simConcurrency > 0 ? simConcurrency : (m.userCount ?? 0)))
+        : (m.userCount ?? 0);
+
+      lastRealtimeUserCount = shownUsers;
+      lastRealtimeSimRunning = runningSim;
+
+      // Force UI update on every message (avoid stale state).
+      if (rtUserCountEl) rtUserCountEl.innerText = String(shownUsers);
+      if (activeUsersEl) activeUsersEl.innerText = String(shownUsers);
       if (rtRpsEl) rtRpsEl.textContent = `${formatNumber(m.requestRate, 1)} rps`;
       if (rtRespEl) rtRespEl.textContent = `${Math.round(m.responseTimeMs?.avg || 0)} ms`;
       if (rtErrEl) rtErrEl.textContent = formatPct(m.errorRate);
 
+      if (rtLoadEl) rtLoadEl.textContent = formatNumber(m.serverLoad?.load1 || 0, 2);
+      if (rtMemEl) rtMemEl.textContent = `${formatNumber(m.serverLoad?.memRssMb || 0, 1)} MB`;
+      if (rtLagEl) rtLagEl.textContent = `${formatNumber(m.serverLoad?.eventLoopLagMsP95 || 0, 1)} ms`;
+
+      if (rtSimEl) {
+        const simRps = Number(m.simulatedRequestRate || 0);
+        rtSimEl.textContent = runningSim ? `sim ${formatNumber(simRps, 1)} rps` : '—';
+      }
+
+      wsDebugLog({
+        receivedUserCount: m.userCount,
+        shownUsers,
+        runningSim,
+        simVirtualUsers,
+        simConcurrency,
+        selectors: {
+          rtUserCountEl: Boolean(rtUserCountEl),
+          activeUsersEl: Boolean(activeUsersEl),
+          rtSimEl: Boolean(rtSimEl)
+        }
+      });
+
+      setIdsStatus(m.ids);
+
+      // Live RPS chart
+      liveSeries.rps.push(Number(m.requestRate || 0));
+      clampSeries(liveSeries.rps, 60);
+      drawLiveChart();
+
       // Display attack details
       const attackDetailsEl = document.getElementById('attackDetails');
       if (attackDetailsEl && m.attackDetails) {
-        const { selectedAttackType, intensity, running } = m.attackDetails;
-        attackDetailsEl.textContent = running
-          ? `Attack: ${selectedAttackType} (Intensity: ${intensity})`
-          : 'No active attack';
+        const { selectedAttackType, intensity, running, virtualUsers, virtualUsersTarget } = m.attackDetails;
+        if (running) {
+          const vu = Number(virtualUsers || 0);
+          const target = Number(virtualUsersTarget || 0);
+          const vuText = target > 0 ? `${vu}/${target}` : String(vu);
+          attackDetailsEl.textContent = `Simulated attack: ${selectedAttackType} (Intensity: ${intensity}${vu > 0 ? ` • Virtual users: ${vuText}` : ''})`;
+        } else {
+          attackDetailsEl.textContent = selectedAttackType
+            ? `Selected simulation: ${selectedAttackType}`
+            : 'No active attack';
+        }
+      }
+
+      // Keep incident list up-to-date during simulated attacks/detections (throttled).
+      const underAttack = Boolean(m.ids && m.ids.underAttack);
+      if (underAttack || runningSim) {
+        const now = Date.now();
+        if (now - lastIncidentsRefreshAtMs > 5000) {
+          lastIncidentsRefreshAtMs = now;
+          refreshIncidents();
+        }
+      }
+    }
+
+    if (msg.type === 'incidents' && msg.data) {
+      renderIncidents(msg.data);
+    }
+
+    if (msg.type === 'incident' && msg.data) {
+      const incident = msg.data;
+      if (incident && incident.id != null) {
+        const existingIdx = incidentsCache.findIndex(i => String(i.id) === String(incident.id));
+        if (existingIdx >= 0) incidentsCache[existingIdx] = incident;
+        else incidentsCache = [incident, ...incidentsCache];
+        renderIncidents(incidentsCache);
+
+        // Popup for newly pushed incidents
+        showAlertPopup(incident);
+      } else {
+        // Fallback: pull the latest list
+        refreshIncidents();
       }
     }
 
     // Show alert for high-intensity attacks
     if (msg.type === 'alert' && msg.data) {
-      alert(msg.data.message);
+      // Backward/forward compatible: can be either a message or an incident payload.
+      if (msg.data && typeof msg.data.message === 'string') {
+        alert(msg.data.message);
+      } else if (msg.data && msg.data.attackType) {
+        showAlertPopup(msg.data);
+      }
     }
 
-    console.log('WebSocket message received:', msg);
+    if (wsDebugEnabled()) {
+      // Useful to confirm WS isn't blocked / payload isn't stale.
+      wsDebugLog('message', msg.type);
+    }
   });
 
   ws.addEventListener('close', () => {
@@ -406,6 +513,10 @@ const loadTrafficStats = () => {
       todayPageViewsEl.textContent = stats.todayPageViews;
       activeUsersEl.textContent = stats.activeUsers;
       conversionRateEl.textContent = stats.conversionRate + "%";
+
+      if (lastRealtimeSimRunning && activeUsersEl && lastRealtimeUserCount !== null) {
+        activeUsersEl.textContent = String(lastRealtimeUserCount);
+      }
     })
     .catch(() => {
       // Fallback to mock data if API fails
@@ -413,6 +524,10 @@ const loadTrafficStats = () => {
       todayPageViewsEl.textContent = Math.floor(Math.random() * 1500) + 800;
       activeUsersEl.textContent = Math.floor(Math.random() * 50) + 20;
       conversionRateEl.textContent = (Math.random() * 5 + 1).toFixed(1) + "%";
+
+      if (lastRealtimeSimRunning && activeUsersEl && lastRealtimeUserCount !== null) {
+        activeUsersEl.textContent = String(lastRealtimeUserCount);
+      }
     });
 };
 

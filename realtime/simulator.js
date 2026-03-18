@@ -49,9 +49,12 @@ function normalizeAttackType(value) {
   return allowed.has(mapped) ? mapped : '';
 }
 
-function createAttackSimulator({ db, baseUrl }) {
+function createAttackSimulator({ db, baseUrl, metrics }) {
   let current = null; // { id, attackType, intensity, startedAt, controller, stopRequested }
   let selected = null; // { attackType, selectedAt }
+
+  const debug = String(process.env.SIMULATOR_DEBUG || '').toLowerCase() === '1' ||
+    String(process.env.SIMULATOR_DEBUG || '').toLowerCase() === 'true';
 
   const internalHeaders = { 'x-demokart-simulator': '1' };
 
@@ -77,6 +80,7 @@ function createAttackSimulator({ db, baseUrl }) {
           intensity: current.intensity,
           concurrency: current.concurrency,
           virtualUsers: current.virtualUsers,
+          virtualUsersTarget: current.virtualUsersTarget,
           startedAt: current.startedAt
         };
 
@@ -108,6 +112,11 @@ function createAttackSimulator({ db, baseUrl }) {
     }
     const stoppedId = current.id;
     current = null;
+    try {
+      metrics?.setVirtualClientCount?.('ecommerce', 0);
+    } catch {
+      // ignore
+    }
     await logAttack('simulator_stop', `Stopped attack job ${stoppedId}`, 'low');
     return { ok: true, stopped: true, id: stoppedId };
   }
@@ -148,17 +157,29 @@ function createAttackSimulator({ db, baseUrl }) {
       attackType: type,
       intensity: cfg.name,
       concurrency: cfg.concurrency,
-      virtualUsers: cfg.virtualUsers,
+      virtualUsers: 0,
+      virtualUsersTarget: cfg.virtualUsers,
       startedAt: new Date().toISOString(),
       controller,
       stopRequested: false
     };
 
+    // Start from 0 and ramp up over time to reflect a growing spike.
+    try {
+      metrics?.setVirtualClientCount?.('ecommerce', 0);
+    } catch {
+      // ignore
+    }
+
     await logAttack(type, `Started ${type} (${cfg.name})`, cfg.name === 'high' ? 'high' : cfg.name);
 
-    // Fire-and-forget runner
+    // Fire-and-forget runners
     runJob({ type, cfg, controller }).catch(() => {
       // best-effort; status is cleared below
+    });
+
+    rampVirtualUsers({ cfg, controller }).catch(() => {
+      // ignore
     });
 
     return { ok: true, id, attackType: type, intensity: cfg.name };
@@ -170,17 +191,29 @@ function createAttackSimulator({ db, baseUrl }) {
 
     const started = Date.now();
 
+    // Keep actual network fan-out bounded, but tag each request as a distinct virtual user.
+    const ipPoolSize = Math.max(50, Math.min(5000, Math.floor(cfg.concurrency * 120)));
+
+    function virtualUser(ipIdx) {
+      const idx = Math.max(0, Math.floor(ipIdx) % ipPoolSize);
+      // Map idx deterministically into a private /16.
+      const o3 = Math.floor(idx / 256) % 256;
+      const o4 = idx % 256;
+      const ip = `10.42.${o3}.${o4}`;
+      const ua = `DemoKartVirtualUser/${cfg.name}/${idx}`;
+      return { ip, ua, id: idx };
+    }
+
     async function oneRequest() {
       if (controller.signal.aborted) return;
 
-      // Generate unique IPs based on intensity
-      let userCount;
-      if (cfg.name === 'low') userCount = 10;
-      else if (cfg.name === 'medium') userCount = 15;
-      else if (cfg.name === 'high') userCount = 25;
-      else userCount = 5; // Default for other intensities
+      const u = virtualUser(Math.floor(Math.random() * ipPoolSize));
 
-      const randomIp = `192.168.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * userCount)}`;
+      const baseHeaders = {
+        ...internalHeaders,
+        'X-Forwarded-For': u.ip,
+        'User-Agent': u.ua
+      };
 
       if (type === 'ddos') {
         const endpoints = ['/', '/api/products', '/api/categories'];
@@ -188,8 +221,7 @@ function createAttackSimulator({ db, baseUrl }) {
         await fetch(baseUrl + ep, {
           method: 'GET',
           headers: {
-            ...internalHeaders,
-            'X-Forwarded-For': randomIp
+            ...baseHeaders
           },
           signal: controller.signal
         }).catch(() => {});
@@ -206,20 +238,20 @@ function createAttackSimulator({ db, baseUrl }) {
           `/api/products/${id}`
         ];
         const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-        await fetch(baseUrl + ep, { method: 'GET', headers: internalHeaders, signal: controller.signal }).catch(() => {});
+        await fetch(baseUrl + ep, { method: 'GET', headers: baseHeaders, signal: controller.signal }).catch(() => {});
         return;
       }
 
       if (type === 'brute_force') {
         const usernames = ['admin', 'root', 'user', 'test', 'administrator', 'guest'];
-        const passwords = ['password', '123456', 'admin', 'letmein', 'qwerty', 'password123'];
         const body = {
-          username: usernames[Math.floor(Math.random() * usernames.length)],
-          password: passwords[Math.floor(Math.random() * passwords.length)]
+          // Avoid accidentally matching real credentials; we want repeated failures.
+          username: `sim_${usernames[Math.floor(Math.random() * usernames.length)]}_${Math.floor(Math.random() * 100000)}`,
+          password: `wrong_${Math.random().toString(16).slice(2)}`
         };
         await fetch(baseUrl + '/api/user/login', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...internalHeaders },
+          headers: { 'Content-Type': 'application/json', ...baseHeaders },
           body: JSON.stringify(body),
           signal: controller.signal
         }).catch(() => {});
@@ -230,7 +262,7 @@ function createAttackSimulator({ db, baseUrl }) {
         // Burst across key endpoints
         const endpoints = ['/', '/api/products', '/api/categories', '/api/products/1'];
         const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
-        await fetch(baseUrl + ep, { method: 'GET', headers: internalHeaders, signal: controller.signal }).catch(() => {});
+        await fetch(baseUrl + ep, { method: 'GET', headers: baseHeaders, signal: controller.signal }).catch(() => {});
       }
     }
 
@@ -264,7 +296,46 @@ function createAttackSimulator({ db, baseUrl }) {
     // auto-stop if still current
     if (current && current.controller === controller) {
       current = null;
+      try {
+        metrics?.setVirtualClientCount?.('ecommerce', 0);
+      } catch {
+        // ignore
+      }
       await logAttack(type, `Finished ${type} (${cfg.name})`, 'low');
+    }
+  }
+
+  async function rampVirtualUsers({ cfg, controller }) {
+    // Increment virtual users by +5..+20 users per second (as requested).
+    // This ramps independently of request execution.
+    const minPerSec = 5;
+    const maxPerSec = 20;
+    const tickMs = 1000;
+
+    while (!controller.signal.aborted) {
+      if (!current || current.controller !== controller) break;
+
+      const target = Number(current.virtualUsersTarget || cfg.virtualUsers || 0);
+      const step = minPerSec + Math.floor(Math.random() * (maxPerSec - minPerSec + 1));
+      const next = target > 0
+        ? Math.min(target, (Number(current.virtualUsers || 0) + step))
+        : (Number(current.virtualUsers || 0) + step);
+
+      current.virtualUsers = next;
+      try {
+        metrics?.setVirtualClientCount?.('ecommerce', next);
+      } catch {
+        // ignore
+      }
+
+      if (debug) {
+        const tgt = Number(current.virtualUsersTarget || 0);
+        console.log(
+          `[simulator] virtualUsers=${next}${tgt > 0 ? `/${tgt}` : ''} intensity=${cfg.name} type=${current.attackType} job=${current.id}`
+        );
+      }
+
+      await sleep(tickMs);
     }
   }
 

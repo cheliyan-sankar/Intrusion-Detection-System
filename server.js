@@ -944,7 +944,7 @@ const requireStimulator = (req, res, next) => {
 
 // IDS detector + server-side simulator
 const detector = createDetector({ db, usePostgres });
-const simulator = createAttackSimulator({ db, baseUrl: `http://127.0.0.1:${PORT}` });
+const simulator = createAttackSimulator({ db, baseUrl: `http://127.0.0.1:${PORT}`, metrics });
 
 app.get("/api/products", (req, res) => {
   const { category, search, minPrice, maxPrice, sort } = req.query;
@@ -1576,7 +1576,13 @@ app.post('/api/simulator/start', requireStimulator, async (req, res) => {
       const pauseState = pauseSiteFor(2 * 60 * 1000, `Attack simulation started: ${label}`);
       incident.sitePausedUntil = pauseState.until;
 
-      broadcast({ type: 'alert', data: incident });
+      // Push a real-time incident entry to admin dashboards.
+      broadcast({ type: 'incident', data: incident });
+
+      // Optional message-style alert (kept compatible with old frontend behavior).
+      if (sev === 'high') {
+        broadcast({ type: 'alert', data: { message: `High-severity simulated incident: ${label}` } });
+      }
     } catch {
       // Best-effort: even if incident insert fails, the simulator can still run.
     }
@@ -1814,11 +1820,14 @@ wss.on('connection', (ws, req) => {
 // Broadcast live metrics + IDS status every second
 setInterval(async () => {
   try {
+    const wsDebug = String(process.env.WS_DEBUG || '').toLowerCase() === '1' ||
+      String(process.env.WS_DEBUG || '').toLowerCase() === 'true';
+
     const snap = metrics.snapshot();
+    snap.simulator = simulator.status();
     const { incident, status } = await detector.tick(snap);
 
     snap.ids = status;
-    snap.simulator = simulator.status();
 
     // Include attack-related details in the broadcast payload
     const attackDetails = {
@@ -1826,12 +1835,23 @@ setInterval(async () => {
       selectedAt: snap.simulator.selectedAt,
       running: snap.simulator.running,
       attackType: snap.simulator.attackType,
-      intensity: snap.simulator.intensity
+      intensity: snap.simulator.intensity,
+      concurrency: snap.simulator.concurrency,
+      virtualUsers: snap.simulator.virtualUsers,
+      virtualUsersTarget: snap.simulator.virtualUsersTarget
     };
 
     // Trigger alert for high-intensity attacks
     if (snap.simulator.intensity === 'high') {
       broadcast({ type: 'alert', data: { message: 'High-intensity attack detected!' } });
+    }
+
+    if (wsDebug) {
+      const vu = Number(snap.clientsVirtual?.ecommerce || 0);
+      const ru = Number(snap.clientsReal?.ecommerce || 0);
+      console.log(
+        `[ws] userCount=${snap.userCount} (real=${ru} virtual=${vu}) rps=${Number(snap.requestRate || 0).toFixed(1)} simRunning=${Boolean(snap.simulator?.running)}`
+      );
     }
 
     broadcast({ type: 'metrics', data: { ...snap, attackDetails } });

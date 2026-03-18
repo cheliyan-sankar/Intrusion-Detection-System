@@ -37,6 +37,16 @@ function createMetrics(options = {}) {
     other: 0
   };
 
+  // Virtual clients are not real WebSocket connections.
+  // They are used to represent simulated traffic spikes (e.g., "lakhs" of users)
+  // without overwhelming a dev environment.
+  const virtualClientCounts = {
+    ecommerce: 0,
+    admin: 0,
+    simulator: 0,
+    other: 0
+  };
+
   const h = monitorEventLoopDelay({ resolution: 10 });
   h.enable();
 
@@ -45,6 +55,7 @@ function createMetrics(options = {}) {
     if (!bucket) {
       bucket = {
         count: 0,
+        simulated: 0,
         errors: 0,
         latencySumMs: 0,
         latenciesMs: [],
@@ -74,12 +85,19 @@ function createMetrics(options = {}) {
     clientCounts[m] = Math.max(0, clientCounts[m] - 1);
   }
 
+  function setVirtualClientCount(moduleName, count) {
+    const m = moduleName === 'ecommerce' || moduleName === 'admin' || moduleName === 'simulator' ? moduleName : 'other';
+    const n = Number(count);
+    virtualClientCounts[m] = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  }
+
   function middleware(req, res, next) {
     const start = process.hrtime.bigint();
     const method = req.method || 'GET';
     const path = normalizePath(req.path || req.url || '/');
     const routeKey = `${method.toUpperCase()} ${path}`;
     const ip = req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
+    const isSimulated = String(req.headers['x-demokart-simulator'] || '').toLowerCase() === '1';
 
     res.on('finish', () => {
       const end = process.hrtime.bigint();
@@ -90,6 +108,7 @@ function createMetrics(options = {}) {
       const nowSec = Math.floor(Date.now() / 1000);
       const bucket = getBucket(nowSec);
       bucket.count += 1;
+      if (isSimulated) bucket.simulated += 1;
       bucket.latencySumMs += ms;
       if (isError) bucket.errors += 1;
 
@@ -124,6 +143,7 @@ function createMetrics(options = {}) {
     const fromSec = nowSec - lastSeconds + 1;
 
     let count = 0;
+    let simulated = 0;
     let errors = 0;
     let latencySumMs = 0;
     const latenciesMs = [];
@@ -135,6 +155,7 @@ function createMetrics(options = {}) {
       const b = buckets.get(sec);
       if (!b) continue;
       count += b.count;
+      simulated += b.simulated || 0;
       errors += b.errors;
       latencySumMs += b.latencySumMs;
       for (const v of b.latenciesMs) latenciesMs.push(v);
@@ -162,7 +183,7 @@ function createMetrics(options = {}) {
       }
     }
 
-    return { nowSec, fromSec, count, errors, latencySumMs, latenciesMs, byRoute, byIp };
+    return { nowSec, fromSec, count, simulated, errors, latencySumMs, latenciesMs, byRoute, byIp };
   }
 
   function snapshot() {
@@ -170,6 +191,7 @@ function createMetrics(options = {}) {
     const longAgg = aggregate(windowSeconds);
 
     const rps = shortAgg.count / snapshotSeconds;
+    const simulatedRps = shortAgg.simulated / snapshotSeconds;
     const avgResponseTimeMs = shortAgg.count > 0 ? shortAgg.latencySumMs / shortAgg.count : 0;
     const p95ResponseTimeMs = percentile(shortAgg.latenciesMs, 95);
     const errorRate = shortAgg.count > 0 ? (shortAgg.errors / shortAgg.count) * 100 : 0;
@@ -195,12 +217,20 @@ function createMetrics(options = {}) {
 
     const mem = process.memoryUsage();
 
+    const clientsTotal = {
+      ecommerce: (clientCounts.ecommerce || 0) + (virtualClientCounts.ecommerce || 0),
+      admin: (clientCounts.admin || 0) + (virtualClientCounts.admin || 0),
+      simulator: (clientCounts.simulator || 0) + (virtualClientCounts.simulator || 0),
+      other: (clientCounts.other || 0) + (virtualClientCounts.other || 0)
+    };
+
     return {
       ts: new Date().toISOString(),
       windowSeconds,
       snapshotSeconds,
-      userCount: clientCounts.ecommerce,
+      userCount: clientsTotal.ecommerce,
       requestRate: rps,
+      simulatedRequestRate: simulatedRps,
       serverLoad: {
         load1: os.loadavg()[0] || 0,
         load5: os.loadavg()[1] || 0,
@@ -218,7 +248,9 @@ function createMetrics(options = {}) {
         requestRate: longAgg.count / windowSeconds,
         avgResponseTimeMs: longAgg.count > 0 ? longAgg.latencySumMs / longAgg.count : 0
       },
-      clients: { ...clientCounts }
+      clients: { ...clientsTotal },
+      clientsReal: { ...clientCounts },
+      clientsVirtual: { ...virtualClientCounts }
     };
   }
 
@@ -226,7 +258,8 @@ function createMetrics(options = {}) {
     middleware,
     snapshot,
     recordClientHello,
-    recordClientBye
+    recordClientBye,
+    setVirtualClientCount
   };
 }
 

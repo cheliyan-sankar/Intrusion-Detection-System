@@ -156,6 +156,7 @@ function createDetector({ db, usePostgres = false }) {
 
   async function createIncident({ type, attackType, severity, affectedEndpoints, metrics }) {
     const createdAt = nowIso();
+    const simulated = Boolean(metrics && metrics.simulator && metrics.simulator.running);
     const incident = {
       id: null,
       type,
@@ -165,6 +166,13 @@ function createDetector({ db, usePostgres = false }) {
       affectedEndpoints: affectedEndpoints || [],
       status: 'open',
       metrics: {
+        simulated,
+        simulator: metrics && metrics.simulator ? {
+          running: Boolean(metrics.simulator.running),
+          attackType: metrics.simulator.attackType || null,
+          intensity: metrics.simulator.intensity || null,
+          virtualUsers: metrics.simulator.virtualUsers || 0
+        } : null,
         requestRate: metrics.requestRate,
         responseTimeMs: metrics.responseTimeMs,
         errorRate: metrics.errorRate,
@@ -186,7 +194,7 @@ function createDetector({ db, usePostgres = false }) {
       await dbRun(
         db,
         "INSERT INTO attack_logs (attack_type, details, severity, ip_address, session_id, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-        [attackType, `Auto-detected by IDS (${type})`, severity, 'system', 'system']
+        [attackType, `${simulated ? 'Simulated scenario' : 'Auto-detected'} by IDS (${type})`, severity, simulated ? 'simulator' : 'system', simulated ? 'simulator' : 'system']
       );
     } catch {
       // ignore
