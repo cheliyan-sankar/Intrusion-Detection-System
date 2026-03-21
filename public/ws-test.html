@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1e1e1e; color: #ddd; }
+    #log { border: 1px solid #666; padding: 10px; height: 600px; overflow-y: auto; background: #000; white-space: pre-wrap; word-break: break-all; }
+    .connected { color: #0f0; }
+    .metrics { color: #0ff; }
+    .error { color: #f00; }
+  </style>
+</head>
+<body>
+  <h2>WebSocket Connection Test</h2>
+  <div>Status: <span id="status">Disconnected</span></div>
+  <div>Messages Received: <span id="count">0</span></div>
+  <button onclick="startAttack()">Start Attack (via HTTP)</button>
+  <button onclick="document.getElementById('log').innerText = ''">Clear Log</button>
+  
+  <h3>Console Output:</h3>
+  <div id="log"></div>
+
+  <script>
+    let ws = null;
+    let messageCount = 0;
+
+    function log(msg, className = '') {
+      const logEl = document.getElementById('log');
+      const timestamp = new Date().toLocaleTimeString();
+      const entry = `[${timestamp}] ${msg}`;
+      logEl.innerText += entry + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(entry);
+    }
+
+    function connect() {
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const url = `${proto}://${window.location.host}/ws`;
+      log(`Connecting to ${url}...`);
+      
+      ws = new WebSocket(url);
+      
+      ws.onopen = function() {
+        log('✓ WebSocket OPEN', 'connected');
+        document.getElementById('status').innerText = 'Connected';
+        document.getElementById('status').style.color = 'lime';
+        
+        ws.send(JSON.stringify({ type: 'hello', module: 'test' }));
+        log('Sent: { type: "hello", module: "test" }');
+      };
+      
+      ws.onmessage = function(event) {
+        messageCount++;
+        document.getElementById('count').innerText = messageCount;
+        
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'metrics') {
+            log(`✓ METRICS #${messageCount}:`, 'metrics');
+            log(`  isRunning: ${msg.data.isRunning}`);
+            log(`  attackType: ${msg.data.attackType}`);
+            log(`  intensity: ${msg.data.intensity}`);
+            log(`  userCount: ${msg.data.userCount}`);
+            log(`  requestRate: ${msg.data.requestRate}`);
+            log(`  simulator.running: ${msg.data.simulator?.running}`);
+          } else {
+            log(`Message [${msg.type}]: ${JSON.stringify(msg).substring(0, 100)}...`);
+          }
+        } catch (e) {
+          log(`ERROR parsing message: ${e.message}`, 'error');
+        }
+      };
+      
+      ws.onerror = function(err) {
+        log(`✗ WebSocket ERROR: ${err}`, 'error');
+      };
+      
+      ws.onclose = function() {
+        log('✗ WebSocket CLOSED', 'error');
+        document.getElementById('status').innerText = 'Disconnected';
+        document.getElementById('status').style.color = 'red';
+        document.getElementById('count').innerText = 0;
+        messageCount = 0;
+      };
+    }
+
+    function startAttack() {
+      log('Starting attack via HTTP...');
+      
+      // First select a simulator
+      fetch('/api/simulator/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attackType: 'ddos', intensity: 'high' })
+      })
+      .then(r => r.json())
+      .then(data => {
+        log(`Selected: ${JSON.stringify(data)}`);
+        
+        // Then start the attack
+        return fetch('/api/simulator/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+      })
+      .then(r => r.json())
+      .then(data => {
+        log(`Started: ${JSON.stringify(data)}`);
+        log('Watch for metrics with isRunning=true above...');
+      })
+      .catch(e => log(`Error: ${e.message}`, 'error'));
+    }
+
+    // Auto-connect on load
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(connect, 500);
+    });
+  </script>
+</body>
+</html>

@@ -942,6 +942,57 @@ const requireStimulator = (req, res, next) => {
   return res.status(401).json({ ok: false, message: "Unauthorized" });
 };
 
+// Keep the last IDS status so we can broadcast an immediate metrics snapshot
+// on simulator triggers (select/start/stop) without waiting for the 1s loop.
+let lastIdsStatus = { underAttack: false, threat: null };
+
+function buildRealtimeMetricsPayload() {
+  const snap = metrics.snapshot();
+  snap.simulator = simulator.status();
+  snap.ids = lastIdsStatus;
+
+  const isRunning = Boolean(snap.simulator && snap.simulator.running);
+  const attackType = snap.simulator && (snap.simulator.attackType || snap.simulator.selectedAttackType) ? (snap.simulator.attackType || snap.simulator.selectedAttackType) : null;
+  const intensity = snap.simulator && snap.simulator.intensity ? snap.simulator.intensity : null;
+
+  // Include attack-related details in the broadcast payload
+  const attackDetails = {
+    selectedAttackType: snap.simulator.selectedAttackType,
+    selectedAt: snap.simulator.selectedAt,
+    running: snap.simulator.running,
+    attackType: snap.simulator.attackType,
+    intensity: snap.simulator.intensity,
+    concurrency: snap.simulator.concurrency,
+    virtualUsers: snap.simulator.virtualUsers,
+    virtualUsersTarget: snap.simulator.virtualUsersTarget,
+    // Convenience fields for UIs that want a single object.
+    userCount: snap.userCount,
+    rps: snap.requestRate
+  };
+
+  return { ...snap, attackDetails, isRunning, attackType, intensity };
+}
+
+function broadcastRealtimeMetricsNow(reason) {
+  const debug = String(process.env.SIMULATOR_DEBUG || '').toLowerCase() === '1' ||
+    String(process.env.SIMULATOR_DEBUG || '').toLowerCase() === 'true';
+
+  try {
+    const payload = buildRealtimeMetricsPayload();
+    broadcast({ type: 'metrics', data: payload });
+    if (debug) {
+      console.log('[simulator/ws] broadcast metrics now:', reason, {
+        running: Boolean(payload.simulator && payload.simulator.running),
+        attackType: payload.simulator && payload.simulator.attackType,
+        intensity: payload.simulator && payload.simulator.intensity,
+        selectedAttackType: payload.simulator && payload.simulator.selectedAttackType
+      });
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // IDS detector + server-side simulator
 const detector = createDetector({ db, usePostgres });
 const simulator = createAttackSimulator({ db, baseUrl: `http://127.0.0.1:${PORT}`, metrics });
@@ -1497,7 +1548,10 @@ app.post('/api/simulator/select', requireStimulator, (req, res) => {
   try {
     const { attackType } = req.body || {};
     const result = simulator.select(attackType);
-    console.log('Simulator API: Attack selected:', attackType);
+    console.log('[simulator/api] select', { attackType, result });
+
+    // Instant update for connected dashboards/storefront.
+    broadcastRealtimeMetricsNow('select');
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, message: 'Server error' });
@@ -1507,6 +1561,8 @@ app.post('/api/simulator/select', requireStimulator, (req, res) => {
 app.post('/api/simulator/start', requireStimulator, async (req, res) => {
   try {
     const { attackType, intensity } = req.body || {};
+
+    console.log('[simulator/api] start request', { attackType, intensity });
 
     const normalized = String(attackType || '').toLowerCase();
     const mapped = normalized === 'bot' ? 'bot_traffic'
@@ -1521,6 +1577,8 @@ app.post('/api/simulator/start', requireStimulator, async (req, res) => {
 
     const result = await simulator.start({ attackType: mapped, intensity });
     if (!result.ok) return res.status(400).json(result);
+
+    console.log('[simulator/api] started', { mapped, result, status: simulator.status() });
 
     // Immediately raise an alert/incident so the admin panel can popup without
     // waiting for traffic thresholds to be detected.
@@ -1587,6 +1645,9 @@ app.post('/api/simulator/start', requireStimulator, async (req, res) => {
       // Best-effort: even if incident insert fails, the simulator can still run.
     }
 
+    // Instant metrics update (do not wait for the 1s interval broadcast).
+    broadcastRealtimeMetricsNow('start');
+
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, message: 'Server error' });
@@ -1598,6 +1659,11 @@ app.post('/api/simulator/stop', requireStimulator, async (req, res) => {
     const result = await simulator.stop();
     // Resume storefront when simulator stops.
     clearSitePause();
+
+    console.log('[simulator/api] stop', { result, status: simulator.status() });
+
+    // Instant metrics update (do not wait for the 1s interval broadcast).
+    broadcastRealtimeMetricsNow('stop');
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, message: 'Server error' });
@@ -1748,14 +1814,27 @@ function safeSend(ws, payload) {
 
 function broadcast(payload) {
   const data = JSON.stringify(payload);
+  const debug = String(process.env.WS_DEBUG || '').toLowerCase() === '1' ||
+    String(process.env.WS_DEBUG || '').toLowerCase() === 'true';
+  let count = 0;
   for (const client of wss.clients) {
     if (client.readyState === 1) {
       try {
         client.send(data);
+        count += 1;
       } catch {
         // ignore
       }
     }
+  }
+  if (debug && payload.type === 'metrics') {
+    console.log('[ws/server] broadcast', {
+      type: payload.type,
+      clientsReceived: count,
+      isRunning: payload.data?.isRunning,
+      attackType: payload.data?.attackType,
+      intensity: payload.data?.intensity
+    });
   }
 }
 
@@ -1794,6 +1873,7 @@ wss.on('connection', (ws, req) => {
   if (req.session && req.session.isStimulator) moduleName = 'simulator';
 
   ws._moduleName = metrics.recordClientHello(moduleName);
+  console.log('[ws/server] client connected', { moduleName: ws._moduleName, sessionId: req.session?.id });
   safeSend(ws, { type: 'hello', data: { module: ws._moduleName } });
 
   if (ws._moduleName === 'admin') {
@@ -1813,6 +1893,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    console.log('[ws/server] client disconnected', { moduleName: ws._moduleName });
     metrics.recordClientBye(ws._moduleName);
   });
 });
@@ -1826,6 +1907,9 @@ setInterval(async () => {
     const snap = metrics.snapshot();
     snap.simulator = simulator.status();
     const { incident, status } = await detector.tick(snap);
+
+    // Preserve last IDS status for immediate trigger broadcasts.
+    lastIdsStatus = status;
 
     snap.ids = status;
 
@@ -1854,7 +1938,11 @@ setInterval(async () => {
       );
     }
 
-    broadcast({ type: 'metrics', data: { ...snap, attackDetails } });
+    const isRunning = Boolean(snap.simulator && snap.simulator.running);
+    const attackType = snap.simulator && (snap.simulator.attackType || snap.simulator.selectedAttackType) ? (snap.simulator.attackType || snap.simulator.selectedAttackType) : null;
+    const intensity = snap.simulator && snap.simulator.intensity ? snap.simulator.intensity : null;
+
+    broadcast({ type: 'metrics', data: { ...snap, attackDetails, isRunning, attackType, intensity } });
   } catch (err) {
     // Keep the loop alive even if something transient fails.
   }

@@ -23,6 +23,7 @@ let lastIncidentsRefreshAtMs = 0;
 
 let lastRealtimeUserCount = null;
 let lastRealtimeSimRunning = false;
+let lastRealtimeMetricsAtMs = 0;
 
 function wsDebugEnabled() {
   try {
@@ -248,14 +249,22 @@ function connectRealtime() {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
   wsShouldReconnect = true;
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  console.log('[admin/ws] connecting to', `${proto}://${window.location.host}/ws`);
   ws = new WebSocket(`${proto}://${window.location.host}/ws`);
 
   ws.addEventListener('open', () => {
+    console.log('[admin/ws] connection open');
+    wsDebugLog('open');
     try {
       ws.send(JSON.stringify({ type: 'hello', module: 'admin' }));
     } catch {
       // ignore
     }
+  });
+
+  ws.addEventListener('error', (err) => {
+    console.error('[admin/ws] error', err);
+    wsDebugLog('error', err && err.message ? err.message : err);
   });
 
   ws.addEventListener('message', (event) => {
@@ -270,6 +279,14 @@ function connectRealtime() {
 
     if (msg.type === 'metrics' && msg.data) {
       const m = msg.data;
+      console.log('[admin/ws] metrics received', {
+        isRunning: m.isRunning,
+        attackType: m.attackType,
+        intensity: m.intensity,
+        userCount: m.userCount,
+        rps: Number(m.requestRate || 0).toFixed(1)
+      });
+      lastRealtimeMetricsAtMs = Date.now();
       const runningSim = Boolean(m.simulator && m.simulator.running);
       const simVirtualUsers = Number(m.simulator?.virtualUsers || 0);
       const simConcurrency = Number(m.simulator?.concurrency || 0);
@@ -281,9 +298,23 @@ function connectRealtime() {
       lastRealtimeSimRunning = runningSim;
 
       // Force UI update on every message (avoid stale state).
-      if (rtUserCountEl) rtUserCountEl.innerText = String(shownUsers);
-      if (activeUsersEl) activeUsersEl.innerText = String(shownUsers);
-      if (rtRpsEl) rtRpsEl.textContent = `${formatNumber(m.requestRate, 1)} rps`;
+      console.log('[admin/ws] updating DOM with:', { shownUsers, rps: formatNumber(m.requestRate, 1) });
+      if (rtUserCountEl) {
+        rtUserCountEl.innerText = String(shownUsers);
+        console.log('[admin/ws] ✓ updated rtUserCount to', shownUsers);
+      } else {
+        console.warn('[admin/ws] ✗ rtUserCountEl not found');
+      }
+      if (activeUsersEl) {
+        activeUsersEl.innerText = String(shownUsers);
+        console.log('[admin/ws] ✓ updated activeUsersEl to', shownUsers);
+      }
+      if (rtRpsEl) {
+        rtRpsEl.textContent = `${formatNumber(m.requestRate, 1)} rps`;
+        console.log('[admin/ws] ✓ updated rtRps to', formatNumber(m.requestRate, 1));
+      } else {
+        console.warn('[admin/ws] ✗ rtRpsEl not found');
+      }
       if (rtRespEl) rtRespEl.textContent = `${Math.round(m.responseTimeMs?.avg || 0)} ms`;
       if (rtErrEl) rtErrEl.textContent = formatPct(m.errorRate);
 
@@ -293,7 +324,7 @@ function connectRealtime() {
 
       if (rtSimEl) {
         const simRps = Number(m.simulatedRequestRate || 0);
-        rtSimEl.textContent = runningSim ? `sim ${formatNumber(simRps, 1)} rps` : '—';
+        rtSimEl.textContent = runningSim ? `Yes (sim ${formatNumber(simRps, 1)} rps)` : 'No';
       }
 
       wsDebugLog({
@@ -380,6 +411,7 @@ function connectRealtime() {
   });
 
   ws.addEventListener('close', () => {
+    wsDebugLog('close');
     ws = null;
     if (wsShouldReconnect) {
       setTimeout(() => connectRealtime(), 1500);
@@ -511,7 +543,12 @@ const loadTrafficStats = () => {
       const stats = data.traffic;
       todayVisitorsEl.textContent = stats.todayVisitors;
       todayPageViewsEl.textContent = stats.todayPageViews;
-      activeUsersEl.textContent = stats.activeUsers;
+      // WS should be the source of truth for active users during live monitoring.
+      // Avoid overwriting a fresh WS-driven value with a slower API response.
+      const hasFreshRealtime = lastRealtimeMetricsAtMs && (Date.now() - lastRealtimeMetricsAtMs < 5000);
+      if (!hasFreshRealtime && activeUsersEl) {
+        activeUsersEl.textContent = stats.activeUsers;
+      }
       conversionRateEl.textContent = stats.conversionRate + "%";
 
       if (lastRealtimeSimRunning && activeUsersEl && lastRealtimeUserCount !== null) {
@@ -522,7 +559,10 @@ const loadTrafficStats = () => {
       // Fallback to mock data if API fails
       todayVisitorsEl.textContent = Math.floor(Math.random() * 500) + 200;
       todayPageViewsEl.textContent = Math.floor(Math.random() * 1500) + 800;
-      activeUsersEl.textContent = Math.floor(Math.random() * 50) + 20;
+      const hasFreshRealtime = lastRealtimeMetricsAtMs && (Date.now() - lastRealtimeMetricsAtMs < 5000);
+      if (!hasFreshRealtime && activeUsersEl) {
+        activeUsersEl.textContent = Math.floor(Math.random() * 50) + 20;
+      }
       conversionRateEl.textContent = (Math.random() * 5 + 1).toFixed(1) + "%";
 
       if (lastRealtimeSimRunning && activeUsersEl && lastRealtimeUserCount !== null) {
@@ -632,7 +672,9 @@ const drawMockChart = () => {
 };
 
 const drawChartWithData = (days, visitors, pageViews) => {
+  if (!trafficChart) return;
   const ctx = trafficChart.getContext("2d");
+  if (!ctx) return;
 
   // Clear canvas
   ctx.clearRect(0, 0, trafficChart.width, trafficChart.height);

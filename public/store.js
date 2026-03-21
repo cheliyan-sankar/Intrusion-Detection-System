@@ -33,6 +33,24 @@ const realtimeText = document.getElementById('realtimeText');
 let storeWs = null;
 let storeWsReconnect = true;
 
+function storeWsDebugEnabled() {
+  try {
+    return String(localStorage.getItem('debugWs') || '') === '1' ||
+      String(localStorage.getItem('debugSim') || '') === '1';
+  } catch {
+    return false;
+  }
+}
+
+let lastStoreWsDebugAtMs = 0;
+function storeWsDebugLog(...args) {
+  if (!storeWsDebugEnabled()) return;
+  const now = Date.now();
+  if (now - lastStoreWsDebugAtMs < 1000) return;
+  lastStoreWsDebugAtMs = now;
+  console.log('[store/ws]', ...args);
+}
+
 function formatAttackLabel(code) {
   const c = String(code || '').toLowerCase();
   if (!c) return '';
@@ -46,9 +64,12 @@ function formatAttackLabel(code) {
 function connectStoreRealtime() {
   if (storeWs && (storeWs.readyState === 0 || storeWs.readyState === 1)) return;
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  console.log('[store/ws] connecting to', `${proto}://${window.location.host}/ws`);
   storeWs = new WebSocket(`${proto}://${window.location.host}/ws`);
 
   storeWs.addEventListener('open', () => {
+    console.log('[store/ws] connection open');
+    storeWsDebugLog('open');
     try {
       storeWs.send(JSON.stringify({ type: 'hello', module: 'ecommerce' }));
     } catch {
@@ -56,16 +77,38 @@ function connectStoreRealtime() {
     }
   });
 
+  storeWs.addEventListener('error', (err) => {
+    console.error('[store/ws] error', err);
+    storeWsDebugLog('error', err && err.message ? err.message : err);
+  });
+
   storeWs.addEventListener('message', (event) => {
     let msg;
     try {
       msg = JSON.parse(event.data);
     } catch {
+      console.error('[store/ws] parse error');
       return;
     }
 
     if (!msg || msg.type !== 'metrics' || !msg.data) return;
     const m = msg.data;
+    console.log('[store/ws] metrics received', {
+      isRunning: m.isRunning,
+      attackType: m.attackType,
+      intensity: m.intensity,
+      userCount: m.userCount,
+      rps: Number(m.requestRate || 0).toFixed(1)
+    });
+
+    storeWsDebugLog('metrics', {
+      running: Boolean(m.simulator && m.simulator.running),
+      attackType: m.simulator && m.simulator.attackType,
+      intensity: m.simulator && m.simulator.intensity,
+      selectedAttackType: m.simulator && m.simulator.selectedAttackType,
+      rps: Number(m.requestRate || 0).toFixed(1),
+      userCount: m.userCount
+    });
     const underAttack = Boolean(m.ids && m.ids.underAttack);
     const threat = m.ids && m.ids.threat ? m.ids.threat : null;
     const selectedAttack = m.simulator && m.simulator.selectedAttackType ? m.simulator.selectedAttackType : null;
@@ -77,6 +120,7 @@ function connectStoreRealtime() {
     const simUsers = Number(m.simulator?.concurrency || 0);
     const simVirtualUsers = Number(m.simulator?.virtualUsers || 0);
 
+    console.log('[store/ws] updating DOM:', { realtimeStrip: Boolean(realtimeStrip), realtimeText: Boolean(realtimeText) });
     if (realtimeStrip) realtimeStrip.classList.remove('hidden');
     if (realtimeText) {
       if (underAttack) {
@@ -96,6 +140,7 @@ function connectStoreRealtime() {
   });
 
   storeWs.addEventListener('close', () => {
+    storeWsDebugLog('close');
     storeWs = null;
     if (storeWsReconnect) setTimeout(connectStoreRealtime, 2000);
   });

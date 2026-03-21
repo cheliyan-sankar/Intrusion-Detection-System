@@ -712,8 +712,10 @@
       });
 
       // Start/Stop attack button
-      startAttackBtn.addEventListener("click", startAttackSimulation);
+      if (startAttackBtn) startAttackBtn.addEventListener("click", startAttackSimulation);
+      else console.warn('[simulator/ui] missing #startAttackBtn');
       if (startAttackBtnTop) startAttackBtnTop.addEventListener("click", startAttackSimulation);
+      else console.warn('[simulator/ui] missing #startAttackBtnTop');
 
       // Control sliders
       visitCountEl.addEventListener("input", () => updateControlValues());
@@ -1136,12 +1138,17 @@
 
       // Immediately reflect selection across storefront/admin via realtime metrics.
       try {
+        const payload = { attackType: selectedAttack };
+        console.log('[simulator/ui] select', payload);
         fetch('/api/simulator/select', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ attackType: selectedAttack })
-        }).catch(() => {});
+          body: JSON.stringify(payload)
+        })
+          .then(r => r.json().catch(() => null).then(data => ({ ok: r.ok, status: r.status, data })))
+          .then(out => console.log('[simulator/ui] select response', out))
+          .catch(() => {});
       } catch {
         // ignore
       }
@@ -1150,6 +1157,12 @@
     }
 
     function startAttackSimulation() {
+      try {
+        const intensity = intensitySelect ? intensitySelect.value : 'low';
+        console.log('[simulator/ui] start button click', { selectedAttack, intensity, isRunning });
+      } catch {
+        // ignore
+      }
       if (!selectedAttack) return;
 
       // Toggle stop if already running
@@ -1178,13 +1191,20 @@
       logActivity('warning', `Starting attack: ${selectedAttack} (${intensity})`);
 
       try {
+        const payload = {
+          isRunning: true,
+          attackType: selectedAttack,
+          intensity
+        };
+        console.log('[simulator/ui] start', payload);
         const res = await fetch('/api/simulator/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ attackType: selectedAttack, intensity })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
+        console.log('[simulator/ui] start response', { ok: res.ok, status: res.status, data });
         if (!data.ok) {
           isRunning = false;
           updateAttackButtons();
@@ -1205,7 +1225,15 @@
     async function stopBackendAttack() {
       if (!isRunning) return;
       try {
-        await fetch('/api/simulator/stop', { method: 'POST', credentials: 'same-origin' });
+        console.log('[simulator/ui] stop');
+        const res = await fetch('/api/simulator/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ isRunning: false })
+        });
+        const data = await res.json().catch(() => null);
+        console.log('[simulator/ui] stop response', { ok: res.ok, status: res.status, data });
       } catch {
         // ignore
       }
